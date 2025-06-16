@@ -9,7 +9,7 @@ import torch
 from torch import nn
 import torch.optim as optim
 import argparse
-from moe import MoE
+from moe import MOE_Model
 torch.set_default_dtype(torch.float64)
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Mixture-of-Experts model.")
@@ -59,7 +59,7 @@ def train_loop(x, y, model, loss_fn, optim, steps=100):
             print(f"Step {step+1}/{steps} - loss: {loss.item():.8f}")
 def main():
     args=parse_args()
-    model_moe=MoE(input_size=args.input_size, num_experts=args.num_experts, hidden_size=args.hidden_size)
+    model_moe=MOE_Model(input_size=args.input_size, num_experts=args.num_experts, hidden_size=args.hidden_size,output_size=args.output_size)
     x=torch.randn(args.input_size,dtype=torch.float64)
     y=torch.randn(args.hidden_size,dtype=torch.float64)
     loss_fn =get_loss_fn(args.lossfn)
