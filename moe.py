@@ -41,6 +41,9 @@ import numpy as np
 from torch.distributions.normal import Normal
 import torch.nn.functional as F
 from functorch import make_functional, vmap
+import logging
+import torch.nn.init as init
+
 torch.set_default_dtype(torch.float64)
 class SparseDispatcher(object):
     """Helper for implementing a mixture of experts.
@@ -153,7 +156,15 @@ class Expert(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_size,hidden_size) #[H,H]
         )
+        self._init_weights()
         
+    
+    def _init_weights(self):
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
+                    if m.bias is not None:
+                        init.zeros_(m.bias)
     def forward(self,x):
         return self.net(x) #[H,]
 
@@ -212,7 +223,7 @@ class MoE(nn.Module):
             )
         self.register_buffer("mean", torch.tensor([0.0]))
         self.register_buffer("std", torch.tensor([1.0]))
-        
+        self.gates_check=None
         self.softmax = nn.Softmax(dim=-1)
         self.gating_network = Gating(self.input_size,self.num_experts)
         
@@ -295,6 +306,11 @@ class MoE(nn.Module):
         
     def forward(self,x,train):
         gates,load= self.topkGating(x,train) #[E,]
+        self.gates_check=gates
+        # if not train:
+        #     # not train-> print gates
+        #     gates_np = gates.detach().cpu().numpy()
+        #     print("Gates:\n", np.array2string(gates_np, precision=4, suppress_small=True))
         importance=gates.sum(0) 
         ##new dispatcher
         dispatcher = SparseDispatcher(self.num_experts, gates)
@@ -317,6 +333,13 @@ class MLP(nn.Module):
             nn.Linear(self.hidden_size, hidden_size),
             nn.Tanh()
         )
+        self._init_weights()
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
+                if m.bias is not None:
+                    init.zeros_(m.bias)
 
     def forward(self, x):
         x = self.model(x)
@@ -333,12 +356,19 @@ class MOE_Model(nn.Module):
         self.output_size = output_size
         self.k=k
         self.loss_coef=loss_coef
+        self.moe=MoE(input_size, num_experts, hidden_size,self.k,self.loss_coef)
         self.model = nn.ModuleList(
-            [MoE(input_size, num_experts, hidden_size,self.k,self.loss_coef)] +
+            [self.moe] +
             [MLP(hidden_size) for _ in range(depth - 1)] +
             [nn.Linear(hidden_size, output_size)]
         )
-
+        self._init_weights()
+    def _init_weights(self):
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
+                    if m.bias is not None:
+                        init.zeros_(m.bias)
     def forward(self, x):
         loss=None
         for i, layer in enumerate(self.model):
@@ -349,3 +379,26 @@ class MOE_Model(nn.Module):
         return x,loss
     
 
+class MLP_Model(nn.Module):
+    def __init__(self, input_size, hidden_size, depth, output_size):
+        super(MLP_Model, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.depth = depth
+        self.output_size = output_size
+        self.model = nn.ModuleList([nn.Linear(input_size, hidden_size)]+[nn.Tanh()] +
+            [MLP(hidden_size) for _ in range(depth)] +
+            [nn.Linear(hidden_size, output_size)]
+        )
+        self._init_weights()
+    def _init_weights(self):
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
+                    if m.bias is not None:
+                        init.zeros_(m.bias)
+                        
+    def forward(self, x):
+        for i, layer in enumerate(self.model):
+            x = layer(x)
+        return x
