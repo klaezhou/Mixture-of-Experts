@@ -2,7 +2,7 @@
 # Author: klae-zhou
 # Date   : 2025-06-05
 #  Description:
-#   This is a demo for mixture of experts.
+#   This is a demo for mixture of experts applied on function approximation.
 # ============
 
 import torch
@@ -11,13 +11,17 @@ import torch.optim as optim
 import argparse
 import numpy as np
 from functorch import make_functional, vmap
-from moe import MOE_Model,MLP_Model
-from utils import parse_args, _init_data_dim1, get_optimizer, get_loss_fn, log_with_time,plot_dual_axis
-from epi_rank import epi_rank_moe,epi_rank_mlp
+from moe_module.moe import MOE_Model,MLP_Model
+from moe_module.utils import parse_args, _init_data_dim1, get_optimizer, get_loss_fn, log_with_time,plot_dual_axis
+from moe_module.epi_rank import epi_rank_moe,epi_rank_mlp
+# download data
+import torchvision.transforms as transforms
+from torchvision.datasets import CIFAR10
+from torch.utils.data import DataLoader
 
 torch.set_default_dtype(torch.float64)
 
-    
+
 
 @log_with_time
 def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
@@ -73,39 +77,18 @@ def eval_model(x, y, model, loss_fn,moe_training=True):
 
 
 
-
-        
 def main():
     args=parse_args()
     #init data and model
     data_x,data_y=_init_data_dim1(args.function,args.interval,args.num_samples,args.device)
     print(f"data_x shape: {data_x.shape},data_y shape: {data_y.shape} ")
     model_moe=MOE_Model(args.input_size, args.num_experts,args.hidden_size,args.depth, args.output_size,args.k,args.loss_coef).to(args.device)
-
-    loss_fn =get_loss_fn(args.lossfn)
-    optimizer = get_optimizer(args.optim,model_moe.parameters(), lr=args.lr)
-    model,total_loss_list_mlp,rank_list_mlp=train_loop(data_x, data_y, model_moe,loss_fn, optimizer, args,args.opt_steps)
-    eval_model(data_x, data_y, model, loss_fn)
-    
-    print("Gates Linear Layer:\n", model.model[0].gating_network.net[0])
-    print("Weight Matrix:\n", model.model[0].gating_network.net[0].weight.detach().cpu().numpy())
-    print("Bias Vector:\n", model.model[0].gating_network.net[0].bias.detach().cpu().numpy())
-    return 
-
-def debug():
-    args=parse_args()
-    #init data and model
-    data_x,data_y=_init_data_dim1(args.function,args.interval,args.num_samples,args.device)
-    print(f"data_x shape: {data_x.shape},data_y shape: {data_y.shape} ")
-    model_moe=MOE_Model(args.input_size, args.num_experts,args.hidden_size,args.depth, args.output_size,args.k,args.loss_coef).to(args.device)
-
     loss_fn =get_loss_fn(args.lossfn)
     optimizer = get_optimizer(args.optim,model_moe.parameters(), lr=args.lr)
     model,total_loss_list_moe,rank_list_moe=train_loop(data_x, data_y, model_moe,loss_fn, optimizer, args,args.opt_steps)
     eval_model(data_x, data_y, model, loss_fn)
+    torch.set_printoptions(threshold=float('inf'))
     print("Gates:\n", model.model[0].gates_check)
-    
-
     model_mlp=MLP_Model(args.input_size, args.hidden_size,args.depth, args.output_size).to(args.device)
     optimizer_mlp=get_optimizer(args.optim,model_mlp.parameters(), lr=args.lr)
         
@@ -115,10 +98,8 @@ def debug():
     
     plot_dual_axis(np.array(total_loss_list_moe),np.array(rank_list_moe),args.opt_steps,"moe")
     plot_dual_axis(np.array(total_loss_list_mlp),np.array(rank_list_mlp),args.opt_steps,"mlp")
-    
-    
+
 
 if __name__ == "__main__":
-    debug()
-    # main()      
+    main()      
     

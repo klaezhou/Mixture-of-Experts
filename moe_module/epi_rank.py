@@ -63,8 +63,10 @@ class epi_rank_mlp():
         self.moe_training=moe_training
         self.model = model
         self.index=index
-        #find the MLP in MOE_Model
-        self.mlp = [ PartialMOE(model,n,self.index) for n in range(len(model.model)-2)]
+        #find the MLP in MOE_Model moe_model => moe-*fcnn-ouputlayer, index=2 表示从第一个fcnn开始计算 
+        #self.model.model[:self.n+self.index] 表示到前n+index个fcnn
+        
+        self.mlp = [ PartialMOE(model,n,self.index) for n in range(len(model.model)-index)]
         self.device=next(model.parameters()).device
         self.epsilon =1e-6
         interval = eval(interval)  # 例如 "[-1,1]" -> [-1, 1]
