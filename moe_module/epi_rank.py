@@ -58,7 +58,7 @@ class epi_rank_moe():
         
         
 class epi_rank_mlp():
-    def __init__(self, model,interval,num_samples,moe_training=True,index=2):
+    def __init__(self, model,interval,num_samples,moe_training=True,index=0):
         """index: defalut 2 ; if no moe, then 1"""
         self.moe_training=moe_training
         self.model = model
@@ -124,7 +124,7 @@ class PartialMOE(nn.Module):
 
     def forward(self, x,training,moe_traing=True):
         for i, layer in enumerate(self.model.model[:self.n+self.index]):
-            if i == 0 and moe_traing:
+            if i == 1 and moe_traing:
                 x, _ = layer(x,training)
             else:
                 x = layer(x)

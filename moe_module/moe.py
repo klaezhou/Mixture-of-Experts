@@ -357,10 +357,12 @@ class MOE_Model(nn.Module):
         self.output_size = output_size
         self.k=k
         self.loss_coef=loss_coef
-        self.moe=MoE(input_size, num_experts, hidden_size,self.k,self.loss_coef,activation)
+        layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), nn.Tanh()))
+        self.moe=MoE(hidden_size, num_experts, hidden_size,self.k,self.loss_coef,activation)
         self.model = nn.ModuleList(
+            [layer1] +  #depth 注意大于等于2
             [self.moe] +
-            [MLP(hidden_size,activation) for _ in range(depth - 1)] +
+            [MLP(hidden_size,activation) for _ in range(depth - 2)] +
             [nn.Linear(hidden_size, output_size)]
         )
         self._init_weights()
@@ -373,7 +375,7 @@ class MOE_Model(nn.Module):
     def forward(self, x):
         loss=None
         for i, layer in enumerate(self.model):
-            if i == 0:  # MoE 层需要 train 参数
+            if i == 1:  # MoE 层需要 train 参数
                 x,loss = layer(x, self.training)
             else:
                 x = layer(x)
@@ -388,9 +390,13 @@ class MLP_Model(nn.Module):
         self.depth = depth
         self.output_size = output_size
         layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), nn.Tanh()))
-        layer2= nn.Sequential(*(nn.Linear(hidden_size, hidden_size), nn.Softmax(1)))
+        layer2= nn.Sequential(*(nn.Linear(hidden_size, hidden_size), nn.Tanh()))   #nn.Softmax(1)
         # 注意不要让激活函数单独占一个list位置，会影响rank的输出
-        self.model = nn.ModuleList( [layer1]+ [layer2]+ # layer1,layer2 相对于moe少了gating 
+        # self.model = nn.ModuleList( [layer1]+ [layer2]+ # layer1,layer2 相对于moe少了gating 
+        #     [MLP(hidden_size) for _ in range(depth-1)] +
+        #     [nn.Linear(hidden_size, output_size)]
+        # )
+        self.model = nn.ModuleList([layer1] + [layer2] + # layer1,layer2 相对于moe少了gating 
             [MLP(hidden_size) for _ in range(depth-1)] +
             [nn.Linear(hidden_size, output_size)]
         )

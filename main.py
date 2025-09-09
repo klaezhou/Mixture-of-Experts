@@ -47,14 +47,15 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
         optim.step()
         if step % 100 == 0 or step == steps - 1:
             if moe_training:
-                rank_moe=epi_rank_moe(model,args.interval,args.integral_sample)
-                rank=rank_moe.rank_moe()
-                total_rank_list.append(rank)
+                # rank_moe=epi_rank_moe(model,args.interval,args.integral_sample)
+                # rank=rank_moe.rank_moe()
+                
                 rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample)
                 rank_list=rank_mlp.rank_mlp()
-                print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -aux_loss: {aux_loss.item():.8f}-rank: {rank},{rank_list}")
+                total_rank_list.append(rank_list[1])
+                print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -aux_loss: {aux_loss.item():.8f}-rank: {rank_list[1]},{rank_list}")
             else:
-                rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample,False,1)
+                rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample,False,0)
                 rank=rank_mlp.rank_mlp()
                 total_rank_list.append(rank[args.plt_r])
                 print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -rank: {rank}")
@@ -88,7 +89,7 @@ def main():
     model,total_loss_list_moe,rank_list_moe=train_loop(data_x, data_y, model_moe,loss_fn, optimizer, args,args.opt_steps)
     eval_model(data_x, data_y, model, loss_fn)
     torch.set_printoptions(threshold=float('inf'))
-    print("Gates:\n", model.model[0].gates_check)
+    # print("Gates:\n", model.model[1].gates_check)
     model_mlp=MLP_Model(args.input_size, args.hidden_size,args.depth, args.output_size).to(args.device)
     optimizer_mlp=get_optimizer(args.optim,model_mlp.parameters(), lr=args.lr)
         
