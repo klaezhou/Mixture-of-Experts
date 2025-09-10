@@ -141,6 +141,7 @@ class SparseDispatcher(object):
         """
         # split nonzero gates for each expert
         return torch.split(self._nonzero_gates, self._part_sizes, dim=0)
+    
 class Expert(nn.Module):
     """
     Expert network class. Using Tanh as activation function.
@@ -154,8 +155,8 @@ class Expert(nn.Module):
         self.net=nn.Sequential(
             nn.Linear(input_size,hidden_size), #[I,H]
             activation,
-            nn.Linear(hidden_size,hidden_size), #[H,H]
-            nn.Softmax(1)
+            nn.Linear(hidden_size,input_size), #[H,I]
+            activation
         )
         self._init_weights()
         
@@ -249,8 +250,8 @@ class MoE(nn.Module):
         m = noisy_top_values.size(1)
         top_values_flat = noisy_top_values.flatten()
 
-        threshold_positions_if_in = torch.arange(batch, device=clean_values.device) * m + self.k
-        threshold_if_in = torch.unsqueeze(torch.gather(top_values_flat, 0, threshold_positions_if_in), 1)
+        threshold_positions_if_in = torch.arange(batch, device=clean_values.device) * m + self.k            #[batch]
+        threshold_if_in = torch.unsqueeze(torch.gather(top_values_flat, 0, threshold_positions_if_in), 1)   #[batch,1]
         is_in = torch.gt(noisy_values, threshold_if_in)
         threshold_positions_if_out = threshold_positions_if_in - 1
         threshold_if_out = torch.unsqueeze(torch.gather(top_values_flat, 0, threshold_positions_if_out), 1)
@@ -259,7 +260,8 @@ class MoE(nn.Module):
         prob_if_in = normal.cdf((clean_values - threshold_if_in)/noise_stddev)
         prob_if_out = normal.cdf((clean_values - threshold_if_out)/noise_stddev)
         prob = torch.where(is_in, prob_if_in, prob_if_out)
-        return prob
+        return prob #[batch,num_experts]
+
     def _gates_to_load(self, gates):
         """Compute the true load per expert, given the gates.
         The load is the number of examples for which the corresponding gate is >0.
@@ -269,6 +271,7 @@ class MoE(nn.Module):
         a float32 `Tensor` of shape [n]
         """
         return (gates > 0).sum(0)
+    
     def cv_squared(self, x):
         """The squared coefficient of variation of a sample.
         Useful as a loss to encourage a positive distribution to be more uniform.
@@ -285,18 +288,44 @@ class MoE(nn.Module):
         if x.shape[0] == 1:
             return torch.tensor([0], device=x.device, dtype=x.dtype)
         return x.var() / (x.mean()**2 + eps)
-    def topkGating(self,x,train):
+    
+    # def topkGating(self,x,train):
             
+    #         noisy,clean,noisy_stddev=self.gating_network(x,train)
+    #         Gating = self.softmax(noisy)
+    #         values, indices= torch.topk(Gating,k=self.k,dim=-1) 
+    #         top_logits,_=torch.topk(Gating,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
+    #         top_k_gates = values / (values.sum(1, keepdim=True) + 1e-6)  # normalization
+    #         zeros = torch.zeros_like(Gating, requires_grad=True)
+    #         gates = zeros.scatter(1, indices, top_k_gates)#Gating: [E,]
+    #         #balance loss
+    #         if  train:
+    #             load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0)
+    #         else:
+    #             load = self._gates_to_load(gates)
+    #             load=load.float()
+                
+            
+    #         return gates,load
+    
+    def topkGating(self,x,train):
+            ## topk--> softmax
             noisy,clean,noisy_stddev=self.gating_network(x,train)
-            Gating = self.softmax(noisy)
-            values, indices= torch.topk(Gating,k=self.k,dim=-1) 
-            top_logits,_=torch.topk(Gating,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
-            top_k_gates = values / (values.sum(1, keepdim=True) + 1e-6)  # normalization
-            zeros = torch.zeros_like(Gating, requires_grad=True)
-            gates = zeros.scatter(1, indices, top_k_gates)#Gating: [E,]
+            values, indices= torch.topk(noisy,k=self.k,dim=-1) 
+            top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
+            values=self.softmax(values)
+            zeros= torch.zeros_like(noisy, requires_grad=True)
+            gates=zeros.scatter(1, indices, values)
+            ## softmax--> topk-->normalize
+            # Gating = self.softmax(noisy)
+            # values, indices= torch.topk(Gating,k=self.k,dim=-1) 
+            # top_logits,_=torch.topk(Gating,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
+            # top_k_gates = values / (values.sum(1, keepdim=True) + 1e-8)  # normalization
+            # zeros = torch.zeros_like(Gating, requires_grad=True)
+            # gates = zeros.scatter(1, indices, top_k_gates)#Gating: [E,]
             #balance loss
             if  train:
-                load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0)
+                load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0) #[num_experts,]
             else:
                 load = self._gates_to_load(gates)
                 load=load.float()
