@@ -14,7 +14,7 @@ from moe_module.utils import get_activation, get_loss_fn, get_optimizer, log_wit
 ##dataset: https://www.cs.toronto.edu/~kriz/cifar.html.
 
 # 参数解析
-parser = argparse.ArgumentParser(description="Train a moe_res_fcnn")
+parser = argparse.ArgumentParser(description="Train a udi_res_fcnn")
 parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs.")
 parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
 parser.add_argument("--device", type=str, default="cuda:1" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
@@ -28,7 +28,7 @@ parser.add_argument("--optim", type=str, default="adamw")
 parser.add_argument("--k", type=int, default=4,help="top-k selection")
 parser.add_argument("--loss_coef", type=float, default=1e-2)
 parser.add_argument("--activation", type=str, default="relu")
-parser.add_argument("--model", type=str, default="moe_res_fcnn")
+parser.add_argument("--model", type=str, default="udi_res_fcnn")
 parser.add_argument("--batch_size", type=int, default=128,help="Batch size")
 parser.add_argument("--download", type=bool, default=False,help="Download dataset")
 args=parser.parse_args()
@@ -46,23 +46,20 @@ def train_loop(train_loader, model,loss_fn, optim,args,R,device=args.device):
     total_loss_list=[]
     for epoch in range(args.epochs):
         running_loss = 0.0 
-        running_aux_loss = 0.0
         for batch_idx, (images, labels) in enumerate(train_loader):
             images = images.to(device)        # [B, 3072]
             labels = labels.to(device)
             # 应用随机投影
             projected = torch.matmul(images, R.T)  # [B, k]
-            y_hat,auxloss=model(projected)
+            y_hat=model(projected)
             loss=loss_fn(y_hat, labels)
-            total_loss =loss+auxloss
+            total_loss =loss
             total_loss_list.append(total_loss.item())
             optim.zero_grad()
             total_loss.backward()
             optim.step()
             running_loss+=loss.item()
-            running_aux_loss+=auxloss.item()
-        print(f"[Epoch {epoch+1}/{args.epochs}]-loss: {running_loss/math.ceil(50000/args.batch_size) :.8f}-\
-              auxloss: {running_aux_loss/math.ceil(50000/args.batch_size):.8f}")
+        print(f"[Epoch {epoch+1}/{args.epochs}]-loss: {running_loss/math.ceil(50000/args.batch_size) :.8f}")
     plot_dual_axis(np.array(total_loss_list),np.array([0]),len(total_loss_list),args.model)
     return model,total_loss_list
 
@@ -80,7 +77,7 @@ def eval_model(test_loader, model,R ,device=args.device,classes=classes):
             labels = labels.to(device)
             projected = torch.matmul(images, R.T)
 
-            outputs, _ = model(projected)  # 只关注分类输出
+            outputs= model(projected)  # 只关注分类输出
             _, predicted = torch.max(outputs.data, 1)
 
             total += labels.size(0)
