@@ -18,6 +18,7 @@ from moe_module.epi_rank import epi_rank_moe,epi_rank_mlp
 import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
 
 torch.set_default_dtype(torch.float64)
 
@@ -29,6 +30,7 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
     total_loss_list=[]
     total_rank_list=[]
     for step in range(steps):
+        model.train()
         # 确保在训练模式
         if moe_training:
             y_hat, aux_loss = model(x)
@@ -46,6 +48,7 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
         total_loss.backward()
         optim.step()
         if step % 100 == 0 or step == steps - 1:
+            eval_model(x, y, model, loss_fn,moe_training,args)
             if moe_training:
                 # rank_moe=epi_rank_moe(model,args.interval,args.integral_sample)
                 # rank=rank_moe.rank_moe()
@@ -53,7 +56,9 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
                 rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample)
                 rank_list=rank_mlp.rank_mlp()
                 total_rank_list.append(rank_list[1])
-                print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -aux_loss: {aux_loss.item():.8f}-rank: {rank_list[1]},{rank_list}")
+                rank_list_experts=rank_mlp.experts_rank_mlp()
+                print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -aux_loss: {aux_loss.item():.8f} -rank: {rank_list[1]},{rank_list} \
+                      -experts_rank: {rank_list_experts[:-2]} -total_experts_rank: {rank_list_experts[-2]} -useless_expert_rank: {rank_list_experts[-1]}")
             else:
                 rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample,False,0)
                 rank=rank_mlp.rank_mlp()
@@ -61,7 +66,7 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
                 print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -rank: {rank}")
     return model,total_loss_list,total_rank_list
             
-def eval_model(x, y, model, loss_fn,moe_training=True):
+def eval_model(x, y, model, loss_fn,moe_training=True,args=None):
     model.eval()
     # model returns the prediction and the loss that encourages all experts to have equal importance and load
     if moe_training:
@@ -75,6 +80,18 @@ def eval_model(x, y, model, loss_fn,moe_training=True):
     else:
         loss=loss
         print("MLP_Model Evaluation Results - loss: {:.8f}".format(loss.item()))
+        
+    fig, ax1 = plt.subplots(figsize=(17, 9))
+    
+    ax1.plot(x.cpu().numpy(), y_hat.detach().cpu().numpy(), label='Prediction')
+    ax1.plot(x.cpu().numpy(), y.cpu().numpy(), label='Ground Truth')
+    fig.tight_layout()
+    plt.title("func_pred")
+    if moe_training:
+        plt.savefig(f"func_pred_moe.png")  # 保存图像
+    else:
+        plt.savefig(f"func_pred_mlp.png")
+    plt.show()
 
 
 

@@ -155,6 +155,8 @@ class Expert(nn.Module):
         self.net=nn.Sequential(
             nn.Linear(input_size,hidden_size), #[I,H]
             activation,
+            # nn.Linear(hidden_size,hidden_size), #[H,H]
+            # activation,
             nn.Linear(hidden_size,input_size), #[H,I]
             activation
         )

@@ -74,32 +74,36 @@ class epi_rank_mlp():
         self.num_samples = num_samples
         self.training=False
         self.M_weight_list=self.compute_matrix_list()
+        if moe_training:
+            self.M_weight_list_experts=self.compute_experts_matrix_list()
+        self.rank_list_experts=0
         self.rank_list=0
-    def compute_matrix_list(self):
-                d_matrix_list=[]
-                for i in range(len(self.mlp)):
-                    d_matrix=self.mlp[i](self.x,self.training,self.moe_training)
-                    d_matrix=d_matrix.detach()
-                    d_matrix_list.append(d_matrix)
 
-                #init weight matrix, numerical
-                def diag_weight(size):
-                    #梯形公式
-                    weights = torch.ones(size)
-                    weights[0] = weights[-1] = 0.5
-                    diag_matrix = torch.diag(weights).to(self.device)
-                    return diag_matrix
-                weight_matrix=diag_weight(self.num_samples)
-                #D.T W D
-                M_weight_list=[]
-                for i in range(len(d_matrix_list)):
-                    M_weight = torch.matmul(d_matrix_list[i].t(), weight_matrix)
-                    M_weight = torch.matmul(M_weight, d_matrix_list[i])
-                    M_weight_list.append(M_weight)
-                self.M_weight_list = M_weight_list
-                # y_np = d_matrix.cpu().numpy()
-                # print("moe ouput:", y_np.shape)
-                return  M_weight_list
+    def compute_matrix_list(self):
+        d_matrix_list=[]
+        for i in range(len(self.mlp)):
+            d_matrix=self.mlp[i](self.x,self.training,self.moe_training)
+            d_matrix=d_matrix.detach()
+            d_matrix_list.append(d_matrix)
+
+        #init weight matrix, numerical
+        def diag_weight(size):
+            #梯形公式
+            weights = torch.ones(size)
+            weights[0] = weights[-1] = 0.5
+            diag_matrix = torch.diag(weights).to(self.device)
+            return diag_matrix
+        weight_matrix=diag_weight(self.num_samples)
+        #D.T W D
+        M_weight_list=[]
+        for i in range(len(d_matrix_list)):
+            M_weight = torch.matmul(d_matrix_list[i].t(), weight_matrix)
+            M_weight = torch.matmul(M_weight, d_matrix_list[i])
+            M_weight_list.append(M_weight)
+        self.M_weight_list = M_weight_list
+        # y_np = d_matrix.cpu().numpy()
+        # print("moe ouput:", y_np.shape)
+        return  M_weight_list
         
     def rank_mlp(self):
         rank_list=[]
@@ -107,13 +111,60 @@ class epi_rank_mlp():
             eigvals = torch.linalg.eigvalsh(self.M_weight_list[i])
 
             # 设定阈值 epsilon
-            epsilon = 1e-6
+            epsilon = 1e-1
 
             # 统计大于 epsilon 的特征值数量
             count = (eigvals > epsilon).sum().item()
             rank_list.append(count)
         self.rank_list = rank_list
         return rank_list
+    
+    def compute_experts_matrix_list(self):
+        d_matrix_list=[]
+        for i in range(self.model.num_experts):
+           
+            partial_model=PartialExpert(self.model,i)
+            d_matrix=partial_model(self.x)
+            d_matrix=d_matrix.detach()
+            d_matrix_list.append(d_matrix)
+
+        big_matrix = torch.cat(d_matrix_list, dim=1)
+        d_matrix_list.append(big_matrix)
+
+
+        #init weight matrix, numerical
+        def diag_weight(size):
+            #梯形公式
+            weights = torch.ones(size)
+            weights[0] = weights[-1] = 0.5
+            diag_matrix = torch.diag(weights).to(self.device)
+            return diag_matrix
+        weight_matrix=diag_weight(self.num_samples)
+        #D.T W D
+        M_weight_list_experts=[]
+        for i in range(len(d_matrix_list)):
+            M_weight = torch.matmul(d_matrix_list[i].t(), weight_matrix)
+            M_weight = torch.matmul(M_weight, d_matrix_list[i])
+            M_weight_list_experts.append(M_weight)
+        self.M_weight_list_experts = M_weight_list_experts
+        # y_np = d_matrix.cpu().numpy()
+        # print("moe ouput:", y_np.shape)
+        return  M_weight_list_experts
+        
+    def experts_rank_mlp(self):
+        rank_list_experts=[]
+        for i in range(len(self.M_weight_list_experts)):
+            eigvals = torch.linalg.eigvalsh(self.M_weight_list_experts[i])
+
+            # 设定阈值 epsilon
+            epsilon = 1e-1
+
+            # 统计大于 epsilon 的特征值数量
+            count = (eigvals > epsilon).sum().item()
+            rank_list_experts.append(count)
+        rank_list_experts.append(sum(rank_list_experts[:-1]) - rank_list_experts[-1])
+        self.rank_list_experts = rank_list_experts
+        return rank_list_experts
     
 class PartialMOE(nn.Module):
     def __init__(self, model, n,index=2):
@@ -130,3 +181,18 @@ class PartialMOE(nn.Module):
                 x = layer(x)
         return x
     
+
+class PartialExpert(nn.Module):
+    def __init__(self, model, n):
+        super().__init__()
+        self.model = model
+        self.n = n
+        self.layer1=self.model.model[0]
+        self.expert=self.model.model[1].experts[n]
+
+    def forward(self, x):
+        
+        x = self.layer1(x)
+        x=self.expert(x)
+
+        return x
