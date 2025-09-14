@@ -111,7 +111,7 @@ class epi_rank_mlp():
             eigvals = torch.linalg.eigvalsh(self.M_weight_list[i])
 
             # 设定阈值 epsilon
-            epsilon = 1e-1
+            epsilon = 1e-2
 
             # 统计大于 epsilon 的特征值数量
             count = (eigvals > epsilon).sum().item()
@@ -157,7 +157,7 @@ class epi_rank_mlp():
             eigvals = torch.linalg.eigvalsh(self.M_weight_list_experts[i])
 
             # 设定阈值 epsilon
-            epsilon = 1e-1
+            epsilon = 1e-2
 
             # 统计大于 epsilon 的特征值数量
             count = (eigvals > epsilon).sum().item()
@@ -187,12 +187,12 @@ class PartialExpert(nn.Module):
         super().__init__()
         self.model = model
         self.n = n
-        self.layer1=self.model.model[0]
-        self.expert=self.model.model[1].experts[n]
+        # self.layer1=self.model.model[0]
+        self.expert=self.model.model[0].experts[n]
 
     def forward(self, x):
         
-        x = self.layer1(x)
-        x=self.expert(x)
+        # x = self.layer1(x)
+        x=self.expert.net(x)
 
         return x

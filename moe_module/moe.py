@@ -155,11 +155,12 @@ class Expert(nn.Module):
         self.net=nn.Sequential(
             nn.Linear(input_size,hidden_size), #[I,H]
             activation,
-            # nn.Linear(hidden_size,hidden_size), #[H,H]
-            # activation,
-            nn.Linear(hidden_size,input_size), #[H,I]
-            activation
+            nn.Linear(hidden_size,hidden_size), #[H,H]
+            activation,
+            nn.Linear(hidden_size,hidden_size), #[H,H]
+            activation,
         )
+        self.last_net=nn.Linear(hidden_size,input_size) #[H,I]
         self._init_weights()
         
     
@@ -170,7 +171,8 @@ class Expert(nn.Module):
                     if m.bias is not None:
                         init.zeros_(m.bias)
     def forward(self,x):
-        return self.net(x) #[H,]
+        x = self.net(x)
+        return self.last_net(x)
 
 
 class Gating(nn.Module):
@@ -389,12 +391,12 @@ class MOE_Model(nn.Module):
         self.k=k
         self.loss_coef=loss_coef
         layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), nn.Tanh()))
-        self.moe=MoE(hidden_size, num_experts, hidden_size,self.k,self.loss_coef,activation)
+        self.moe=MoE(input_size, num_experts, hidden_size,self.k,self.loss_coef,activation)
         self.model = nn.ModuleList(
-            [layer1] +  #depth 注意大于等于2
-            [self.moe] +
-            [MLP(hidden_size,activation) for _ in range(depth - 2)] +
-            [nn.Linear(hidden_size, output_size)]
+            # [layer1] +  #depth 注意大于等于2
+            [self.moe]
+            # + [MLP(hidden_size,activation) for _ in range(depth - 2)] +
+            # [nn.Linear(hidden_size, output_size)]
         )
         self._init_weights()
     def _init_weights(self):
@@ -406,7 +408,7 @@ class MOE_Model(nn.Module):
     def forward(self, x):
         loss=None
         for i, layer in enumerate(self.model):
-            if i == 1:  # MoE 层需要 train 参数
+            if i == 0:  # MoE 层需要 train 参数
                 x,loss = layer(x, self.training)
             else:
                 x = layer(x)
