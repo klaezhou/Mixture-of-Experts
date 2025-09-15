@@ -115,8 +115,8 @@ class epi_rank_expert():
     
     def compute_total_matrix(self):
         d_matrix_list=[]
-        for i in range(len(self.expert)):
-                    d_matrix=self.expert[i](self.x)
+        for i in range(len(self.experts)):
+                    d_matrix=self.experts[i](self.x)
                     d_matrix=d_matrix.detach()
                     d_matrix_list.append(d_matrix)
         D_matrix=torch.cat(d_matrix_list, dim=1)
@@ -184,10 +184,10 @@ class Expert_output(nn.Module):
         self.index=index # moe layer index moe层的位置，默认model里只包含一个moe层，其余均为fcnn
         self.mlp=self.model.model[:self.index]
         self.expert=self.model.model[self.index].experts[self.n]
-        print("expert output:",self.expert)
+        # print("expert output:",self.expert)
     
     def forward(self,x):
-        x=self.mlp(x)
+        # x=self.mlp(x)
         x=self.expert(x)
         return x
         
