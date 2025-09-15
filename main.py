@@ -59,7 +59,7 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
                 expert_total=rank_expert.rank_mlp(True)
                 rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample)
                 rank_list=rank_mlp.rank_mlp()
-                total_rank_list.append(rank_list[0])
+                total_rank_list.append(rank_list[args.index])
                 print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -aux_loss: {aux_loss.item():.8f}-rank: {rank_list}--expert: {rank_expert_list}--expert total: {expert_total}")
             else:
                 rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample,False,1)
@@ -97,6 +97,7 @@ def eval_model(x, y, model, loss_fn,moe_training=True,args=None):
 
 def main():
     args=parse_args()
+    print("sb")
     #init data and model
     data_x,data_y=_init_data_dim1(args.function,args.interval,args.num_samples,args.device)
     print(f"data_x shape: {data_x.shape},data_y shape: {data_y.shape} ")
