@@ -19,7 +19,7 @@ def parse_args():
     parser.add_argument("--depth", type=int, default=4,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adam")
-    parser.add_argument("--opt_steps", type=int, default=30000)
+    parser.add_argument("--opt_steps", type=int, default=300)
     parser.add_argument("--function", type=str, default="cosx+sin100x+cos30x", help="function")
     parser.add_argument("--interval", type=str, default="[-1,1]")
     parser.add_argument("--num_samples", type=int, default=300)
@@ -28,6 +28,7 @@ def parse_args():
     parser.add_argument("--integral_sample", type=int, default=300, help="integral_sample")
     parser.add_argument("--plt_r", type=int, default=1)
     parser.add_argument("--decrease_rate", type=float, default=0.9)
+    parser.add_argument("--index", type=int, default=0,help="index of the expert")
     return parser.parse_args()
 def _init_data_dim1(func: str, interval: str, num_samples: int,device):
     """
