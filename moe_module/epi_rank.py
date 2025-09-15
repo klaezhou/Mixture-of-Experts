@@ -13,7 +13,7 @@ class epi_rank_moe():
         # moe example: y,loss=self.moe(x,train)
         self.moe = model.moe
         self.device=next(model.parameters()).device
-        self.epsilon =1e-6
+        self.epsilon =1e-1
         interval = eval(interval)  # 例如 "[-1,1]" -> [-1, 1]
         self.x = torch.linspace(interval[0], interval[1], num_samples).view(-1, 1).to(self.device)
         self.num_samples = num_samples
@@ -49,7 +49,7 @@ class epi_rank_moe():
         eigvals = torch.linalg.eigvalsh(self.M_weight)
 
         # 设定阈值 epsilon
-        epsilon = 1e-6
+        epsilon = 1e-1
 
         # 统计大于 epsilon 的特征值数量
         count = (eigvals > epsilon).sum().item()
@@ -58,7 +58,7 @@ class epi_rank_moe():
         
         
 class epi_rank_mlp():
-    def __init__(self, model,interval,num_samples,moe_training=True,index=2):
+    def __init__(self, model,interval,num_samples,moe_training=True,index=1):
         """index: defalut 2 ; if no moe, then 1"""
         self.moe_training=moe_training
         self.model = model
@@ -66,12 +66,13 @@ class epi_rank_mlp():
         #find the MLP in MOE_Model moe_model => moe-*fcnn-ouputlayer, index=2 表示从第一个fcnn开始计算 
         #self.model.model[:self.n+self.index] 表示到前n+index个fcnn
         
-        self.mlp = [ PartialMOE(model,n,self.index) for n in range(len(model.model)-index)]
+        self.mlp = [ PartialMOE(model,n,self.index) for n in range(len(model.model)-1)]
         self.device=next(model.parameters()).device
         self.epsilon =1e-6
         interval = eval(interval)  # 例如 "[-1,1]" -> [-1, 1]
         self.x = torch.linspace(interval[0], interval[1], num_samples).view(-1, 1).to(self.device)
         self.num_samples = num_samples
+        
         self.training=False
         self.M_weight_list=self.compute_matrix_list()
         self.rank_list=0
@@ -79,6 +80,8 @@ class epi_rank_mlp():
                 d_matrix_list=[]
                 for i in range(len(self.mlp)):
                     d_matrix=self.mlp[i](self.x,self.training,self.moe_training)
+                    # print("length",len(self.model.model))
+                    # print(f"mlp {i}ouput:", d_matrix.shape)
                     d_matrix=d_matrix.detach()
                     d_matrix_list.append(d_matrix)
 
@@ -107,7 +110,7 @@ class epi_rank_mlp():
             eigvals = torch.linalg.eigvalsh(self.M_weight_list[i])
 
             # 设定阈值 epsilon
-            epsilon = 1e-6
+            epsilon = 1e-1
 
             # 统计大于 epsilon 的特征值数量
             count = (eigvals > epsilon).sum().item()
@@ -116,15 +119,15 @@ class epi_rank_mlp():
         return rank_list
     
 class PartialMOE(nn.Module):
-    def __init__(self, model, n,index=2):
+    def __init__(self, model, n,index=1):
         super().__init__()
         self.model = model
         self.n = n
-        self.index=index
+        self.index=index #default 1
 
-    def forward(self, x,training,moe_traing=True):
+    def forward(self, x,training,moe_training=True):
         for i, layer in enumerate(self.model.model[:self.n+self.index]):
-            if i == 0 and moe_traing:
+            if i == 0 and moe_training:
                 x, _ = layer(x,training)
             else:
                 x = layer(x)

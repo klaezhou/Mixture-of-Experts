@@ -10,23 +10,24 @@ import matplotlib.pyplot as plt
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Mixture-of-Experts model.")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
+    parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate.")
     parser.add_argument("--device", type=str, default="cuda:3" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
     parser.add_argument("--input_size", type=int, default=1,help="Input size (funcion approximation x) ")
     parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
-    parser.add_argument("--num_experts", type=int, default=10,help="Number of experts")
-    parser.add_argument("--hidden_size", type=int, default=50,help="Hidden size of the MLP")
+    parser.add_argument("--num_experts", type=int, default=20,help="Number of experts")
+    parser.add_argument("--hidden_size", type=int, default=20,help="Hidden size of the MLP")
     parser.add_argument("--depth", type=int, default=4,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
-    parser.add_argument("--optim", type=str, default="adamw")
+    parser.add_argument("--optim", type=str, default="adam")
     parser.add_argument("--opt_steps", type=int, default=30000)
-    parser.add_argument("--function", type=str, default="cosx+cos2x+cos30x", help="function")
+    parser.add_argument("--function", type=str, default="cosx+sin100x+cos30x", help="function")
     parser.add_argument("--interval", type=str, default="[-1,1]")
-    parser.add_argument("--num_samples", type=int, default=250)
-    parser.add_argument("--k", type=int, default=2,help="top-k selection")
-    parser.add_argument("--loss_coef", type=float, default=1e-2)
-    parser.add_argument("--integral_sample", type=int, default=100, help="integral_sample")
+    parser.add_argument("--num_samples", type=int, default=300)
+    parser.add_argument("--k", type=int, default=4,help="top-k selection")
+    parser.add_argument("--loss_coef", type=float, default=1)
+    parser.add_argument("--integral_sample", type=int, default=300, help="integral_sample")
     parser.add_argument("--plt_r", type=int, default=1)
+    parser.add_argument("--decrease_rate", type=float, default=0.9)
     return parser.parse_args()
 def _init_data_dim1(func: str, interval: str, num_samples: int,device):
     """
@@ -38,7 +39,7 @@ def _init_data_dim1(func: str, interval: str, num_samples: int,device):
     # 定义函数解析器
     def parse_function(expr: str):
         expr = expr.replace("cos30x", "np.cos(30*x_np)")
-        expr = expr.replace("cos2x", "np.cos(2*x_np)")
+        expr = expr.replace("sin100x", "np.sin(100*x_np)")
         expr = expr.replace("cosx", "np.cos(x_np)")
         def f(x_tensor):
             x_np = x_tensor.numpy()
@@ -55,7 +56,7 @@ def _init_data_dim1(func: str, interval: str, num_samples: int,device):
 def get_optimizer(name, model_params, lr=1e-3):
     name = name.lower()
     if name == "adam":
-        return optim.Adam(model_params,lr=lr,   betas=(0.9, 0.98), eps=1e-9,weight_decay=1e-4)
+        return optim.Adam(model_params,lr=lr,   betas=(0.9, 0.999), eps=1e-9)
     elif name == "sgd":
         return optim.SGD(model_params, lr=lr, momentum=0.9)
     elif name == "adamw":
@@ -111,6 +112,7 @@ def plot_dual_axis(loss: np.ndarray, rank: np.ndarray, step: int,name):
     ax1.plot(z, loss, 'b-', label='Loss')
     ax1.set_xlabel('Iterations')
     ax1.set_ylabel('Loss', color='b')
+    ax1.set_yscale('log', base=10) 
     ax1.tick_params(axis='y', labelcolor='b')
 
     ax2 = ax1.twinx()  # 创建共享 x 轴的第二个 y 轴
@@ -135,3 +137,4 @@ def get_activation(name: str):
         return nn.GELU()
     else:
         raise ValueError(f"Unsupported activation: {name}")
+

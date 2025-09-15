@@ -155,7 +155,7 @@ class Expert(nn.Module):
             nn.Linear(input_size,hidden_size), #[I,H]
             activation,
             nn.Linear(hidden_size,hidden_size), #[H,H]
-            nn.Softmax(1)
+            activation,
         )
         self._init_weights()
         
@@ -286,14 +286,20 @@ class MoE(nn.Module):
             return torch.tensor([0], device=x.device, dtype=x.dtype)
         return x.var() / (x.mean()**2 + eps)
     def topkGating(self,x,train):
-            
+            ## topk--> softmax
             noisy,clean,noisy_stddev=self.gating_network(x,train)
-            Gating = self.softmax(noisy)
-            values, indices= torch.topk(Gating,k=self.k,dim=-1) 
-            top_logits,_=torch.topk(Gating,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
-            top_k_gates = values / (values.sum(1, keepdim=True) + 1e-6)  # normalization
-            zeros = torch.zeros_like(Gating, requires_grad=True)
-            gates = zeros.scatter(1, indices, top_k_gates)#Gating: [E,]
+            values, indices= torch.topk(noisy,k=self.k,dim=1) 
+            top_logits,_=torch.topk(noisy,k=self.k+1,dim=1) #values: [k,] indices: [k,]
+            values=self.softmax(values)
+            zeros= torch.zeros_like(noisy, requires_grad=True)
+            gates=zeros.scatter(1, indices, values)
+            ## softmax--> topk-->normalize
+            # Gating = self.softmax(noisy)
+            # values, indices= torch.topk(Gating,k=self.k,dim=-1) 
+            # top_logits,_=torch.topk(Gating,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
+            # top_k_gates = values / (values.sum(1, keepdim=True) + 1e-8)  # normalization
+            # zeros = torch.zeros_like(Gating, requires_grad=True)
+            # gates = zeros.scatter(1, indices, top_k_gates)#Gating: [E,]
             #balance loss
             if  train:
                 load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0)
@@ -364,6 +370,9 @@ class MOE_Model(nn.Module):
             [nn.Linear(hidden_size, output_size)]
         )
         self._init_weights()
+    def adlosscoff(self,decrease_rate):
+        self.moe.loss_coef=self.moe.loss_coef*decrease_rate
+        return
     def _init_weights(self):
             for m in self.modules():
                 if isinstance(m, nn.Linear):
@@ -384,11 +393,12 @@ class MLP_Model(nn.Module):
     def __init__(self, input_size, hidden_size, depth, output_size):
         super(MLP_Model, self).__init__()
         self.input_size = input_size
+        hidden_size*=2
         self.hidden_size = hidden_size
         self.depth = depth
         self.output_size = output_size
         layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), nn.Tanh()))
-        layer2= nn.Sequential(*(nn.Linear(hidden_size, hidden_size), nn.Softmax(1)))
+        layer2= nn.Sequential(*(nn.Linear(hidden_size, hidden_size), nn.Tanh()))
         # 注意不要让激活函数单独占一个list位置，会影响rank的输出
         self.model = nn.ModuleList( [layer1]+ [layer2]+ # layer1,layer2 相对于moe少了gating 
             [MLP(hidden_size) for _ in range(depth-1)] +
