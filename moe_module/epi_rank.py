@@ -187,7 +187,8 @@ class Expert_output(nn.Module):
         # print("expert output:",self.expert)
     
     def forward(self,x):
-        # x=self.mlp(x)
+        if self.index!=0:
+            x=self.mlp(x)
         x=self.expert(x)
         return x
         
