@@ -19,7 +19,7 @@ def parse_args():
     parser.add_argument("--depth", type=int, default=4,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adam")
-    parser.add_argument("--opt_steps", type=int, default=300)
+    parser.add_argument("--opt_steps", type=int, default=30000)
     parser.add_argument("--function", type=str, default="cosx+sin100x+cos30x", help="function")
     parser.add_argument("--interval", type=str, default="[-1,1]")
     parser.add_argument("--num_samples", type=int, default=300)

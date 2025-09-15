@@ -29,6 +29,7 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
     aux_loss=0
     total_loss_list=[]
     total_rank_list=[]
+    total_useless_rank_list=[]
     for step in range(steps):
         # 确保在训练模式
         model.train()
@@ -57,16 +58,20 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
                 rank_expert=epi_rank_expert(model,args.interval,args.integral_sample,args.index)
                 rank_expert_list=rank_expert.rank_mlp()
                 expert_total=rank_expert.rank_mlp(True)
+                useless_rank=sum(rank_expert_list)-sum(expert_total)
+                total_useless_rank_list.append(useless_rank)
                 rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample)
                 rank_list=rank_mlp.rank_mlp()
                 total_rank_list.append(rank_list[args.index])
                 print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -aux_loss: {aux_loss.item():.8f}-rank: {rank_list}--expert: {rank_expert_list}--expert total: {expert_total}")
+                total_rank_list.append(rank_list[0])
+                print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -aux_loss: {aux_loss.item():.8f} -rank: {rank_list} --expert: {rank_expert_list} --expert total: {expert_total} --useless rank: {useless_rank}")
             else:
                 rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample,False,1)
                 rank=rank_mlp.rank_mlp()
                 total_rank_list.append(rank[args.plt_r])
                 print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -rank: {rank}")
-    return model,total_loss_list,total_rank_list
+    return model,total_loss_list,total_rank_list, total_useless_rank_list
             
 def eval_model(x, y, model, loss_fn,moe_training=True,args=None):
     model.eval()
@@ -104,19 +109,20 @@ def main():
     model_moe=MOE_Model(args.input_size, args.num_experts,args.hidden_size,args.depth, args.output_size,args.k,args.loss_coef).to(args.device)
     loss_fn =get_loss_fn(args.lossfn)
     optimizer = get_optimizer(args.optim,model_moe.parameters(), lr=args.lr)
-    model,total_loss_list_moe,rank_list_moe=train_loop(data_x, data_y, model_moe,loss_fn, optimizer, args,args.opt_steps)
+    model,total_loss_list_moe,rank_list_moe,useless_rank_list_experts=train_loop(data_x, data_y, model_moe,loss_fn, optimizer, args,args.opt_steps)
     eval_model(data_x, data_y, model, loss_fn)
     torch.set_printoptions(threshold=float('inf'))
     # print("Gates:\n", model.model[0].gates_check)
     model_mlp=MLP_Model(args.input_size, args.hidden_size,args.depth, args.output_size).to(args.device)
     optimizer_mlp=get_optimizer(args.optim,model_mlp.parameters(), lr=args.lr)
         
-    model_mlp,total_loss_list_mlp,rank_list_mlp=train_loop(data_x, data_y, model_mlp,loss_fn, optimizer_mlp, args,args.opt_steps,moe_training=False)
+    model_mlp,total_loss_list_mlp,rank_list_mlp,_=train_loop(data_x, data_y, model_mlp,loss_fn, optimizer_mlp, args,args.opt_steps,moe_training=False)
     eval_model(data_x, data_y, model_mlp, loss_fn,moe_training=False)
     
 
     plot_dual_axis(np.array(total_loss_list_moe),np.array(rank_list_moe),args.opt_steps,"moe")
     plot_dual_axis(np.array(total_loss_list_mlp),np.array(rank_list_mlp),args.opt_steps,"mlp")
+    plot_dual_axis(np.array(total_loss_list_moe),np.array(useless_rank_list_experts),args.opt_steps,"useless_experts")
 
 
 if __name__ == "__main__":
