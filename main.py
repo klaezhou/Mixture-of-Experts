@@ -63,8 +63,6 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
                 rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample)
                 rank_list=rank_mlp.rank_mlp()
                 total_rank_list.append(rank_list[args.index])
-                print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -aux_loss: {aux_loss.item():.8f}-rank: {rank_list}--expert: {rank_expert_list}--expert total: {expert_total}")
-                total_rank_list.append(rank_list[0])
                 print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -aux_loss: {aux_loss.item():.8f} -rank: {rank_list} --expert: {rank_expert_list} --expert total: {expert_total} --useless rank: {useless_rank}")
             else:
                 rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample,False,1)
