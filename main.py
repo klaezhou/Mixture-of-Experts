@@ -19,8 +19,10 @@ import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
+import torch.optim as optimizer
 
 torch.set_default_dtype(torch.float64)
+
 
 
 
@@ -30,6 +32,7 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
     total_loss_list=[]
     total_rank_list=[]
     total_useless_rank_list=[]
+    scheduler = optimizer.lr_scheduler.StepLR(optim, step_size=1000, gamma=0.85)
     for step in range(steps):
         # 确保在训练模式
         model.train()
@@ -52,7 +55,8 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
         total_loss_list.append(total_loss.item())
         optim.zero_grad()
         total_loss.backward()
-        optim.step()
+        optim.step() 
+        scheduler.step()
         if step % 100 == 0 or step == steps - 1:
             if moe_training:
                 rank_expert=epi_rank_expert(model,args.interval,args.integral_sample,args.index)
@@ -111,7 +115,7 @@ def main():
     eval_model(data_x, data_y, model, loss_fn)
     torch.set_printoptions(threshold=float('inf'))
     # print("Gates:\n", model.model[0].gates_check)
-    model_mlp=MLP_Model(args.input_size, args.hidden_size*2,args.depth, args.output_size).to(args.device)
+    model_mlp=MLP_Model(args.input_size, 40,args.depth, args.output_size).to(args.device)
     optimizer_mlp=get_optimizer(args.optim,model_mlp.parameters(), lr=args.lr)
         
     model_mlp,total_loss_list_mlp,rank_list_mlp,_=train_loop(data_x, data_y, model_mlp,loss_fn, optimizer_mlp, args,args.opt_steps*2,moe_training=False)
@@ -125,5 +129,6 @@ def main():
 
 
 if __name__ == "__main__":
+    torch.manual_seed(42)
     main()      
     

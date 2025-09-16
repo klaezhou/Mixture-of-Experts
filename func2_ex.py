@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
 torch.set_default_dtype(torch.float64)
-
+import torch.optim as optimizer
 
 
 def parse_args():
@@ -32,57 +32,52 @@ def parse_args():
     parser.add_argument("--input_size", type=int, default=1,help="Input size (funcion approximation x) ")
     parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
     parser.add_argument("--num_experts", type=int, default=20,help="Number of experts")
-    parser.add_argument("--hidden_size", type=int, default=20,help="Hidden size of the MLP")
+    parser.add_argument("--hidden_size", type=int, default=50,help="Hidden size of the MLP")
     parser.add_argument("--depth", type=int, default=3,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adam")
-    parser.add_argument("--opt_steps", type=int, default=10000)
-    parser.add_argument("--function", type=str, default="func2", help="function")
+    parser.add_argument("--opt_steps", type=int, default=20000)
+    parser.add_argument("--function", type=str, default="cos5x+sin100x+cos30x", help="function")
     parser.add_argument("--interval", type=str, default="[-1,1]")
     parser.add_argument("--num_samples", type=int, default=300)
-    parser.add_argument("--k", type=int, default=4,help="top-k selection")
+    parser.add_argument("--k", type=int, default=2,help="top-k selection")
     parser.add_argument("--loss_coef", type=float, default=1)
     parser.add_argument("--integral_sample", type=int, default=300, help="integral_sample")
     parser.add_argument("--plt_r", type=int, default=1)
-    parser.add_argument("--decrease_rate", type=float, default=0.9)
+    parser.add_argument("--decrease_rate", type=float, default=0.7)
     parser.add_argument("--index", type=int, default=0,help="index of the expert")
     return parser.parse_args()
 
 
-def piecewise_hard(x: torch.Tensor, use_removable=True):
-    
+def piecewise_hard(x: torch.Tensor):
     y = torch.empty_like(x, dtype=torch.float64)
 
-    # 1) 振荡段
+    # 1) 振荡段：增加幅度变化，让振荡更复杂
     m1 = (x >= -1.0) & (x < -0.6)
-    y[m1] = -0.5 + 0.3 * torch.sin(6*torch.pi * x[m1])
+    y[m1] = -0.5 + (0.2 + 0.1 * x[m1]) * torch.sin(6 * torch.pi * x[m1])  # 幅度随 x 改变
 
-    # 2) 常值段（与左侧跳跃）
+    # 2) 常值段：变成缓慢的二次曲线 + 跳跃
     m2 = (x >= -0.6) & (x < -0.2)
-    y[m2] = 0.8
+    y[m2] = 1.3 + 0.5 * (x[m2] + 0.4)**2  # 二次上凸
 
-    # 3) 线性段（与左侧跳跃）
+    # 3) 线性段：加一点正弦扰动
     m3 = (x >= -0.2) & (x < 0.0)
-    y[m3] = -0.3 + 2.0*(x[m3] + 0.2)
+    y[m3] = -0.1 + 2.0 * (x[m3] + 0.2) + 0.1 * torch.sin(10 * torch.pi * x[m3])
 
-    # 4) 高频小振幅（与左侧跳跃）
+    # 4) 高频段：叠加两种频率
     m4 = (x >= 0.0) & (x < 0.2)
-    y[m4] = 0.6 + 0.1 * torch.sin(24*torch.pi * x[m4])
+    y[m4] = 1.0 + 0.1 * torch.sin(24 * torch.pi * x[m4]) + 0.05 * torch.sin(60 * torch.pi * x[m4])
 
-    # 5) 尖点段（连续但不可导）
+    # 5) 尖点段：换成分段绝对值 + 三角函数组合
     m5 = (x >= 0.2) & (x < 0.6)
-    y[m5] = torch.abs(3*x[m5] - 1.0) - 0.4
+    y[m5] = torch.abs(3 * x[m5] - 1.0) - 1.0 + 0.05 * torch.sin(15 * torch.pi * x[m5])
 
-    # 6) 光滑二次段
+    # 6) 光滑二次段：换成三次多项式 + 平滑余弦
     m6 = (x >= 0.6) & (x <= 1.0)
-    y[m6] = 0.7 - (x[m6] - 0.6)**2
-
-    # 可去间断：替换单点值（可选）
-    if use_removable:
-        m_single = torch.isclose(x, torch.tensor(0.75, dtype=x.dtype, device=x.device))
-        y[m_single] = 0.0
+    y[m6] = 1.2 - (x[m6] - 0.6)**2 + 0.1 * torch.cos(5 * torch.pi * x[m6]) + 0.2 * (x[m6] - 0.6)**3
 
     return y
+
 def plot_dual_axis(loss: np.ndarray, rank: np.ndarray, step: int,name):
     z = np.arange(1, step + 1)
 
@@ -111,6 +106,24 @@ def plot_dual_axis(loss: np.ndarray, rank: np.ndarray, step: int,name):
     plt.title("Loss vs. Rank")
     plt.savefig(f"loss_vs_rank_func2_{name}.png")  # 保存图像
     plt.show()
+# def _init_data_dim1(func: str, interval: str, num_samples: int,device):
+#     """
+#     初始化数据 
+#     """
+#     interval = eval(interval)  # 例如 "[-1,1]" -> [-1, 1]
+#     # x = (interval[1] - interval[0]) * torch.rand(num_samples, 1) + interval[0]
+#     x=torch.linspace(interval[0], interval[1], num_samples).view(-1, 1)
+#     # 定义函数解析器
+#     if func=="func2":
+#         f=piecewise_hard
+#     y = f(x)
+#     noise_level = 0.05  # 控制噪声幅度，可调
+#     # y = y + noise_level * torch.randn_like(y)
+    
+#     x = x.to(device)
+#     y = y.to(device)
+#     return x, y
+
 def _init_data_dim1(func: str, interval: str, num_samples: int,device):
     """
     初始化数据 
@@ -119,8 +132,17 @@ def _init_data_dim1(func: str, interval: str, num_samples: int,device):
     # x = (interval[1] - interval[0]) * torch.rand(num_samples, 1) + interval[0]
     x=torch.linspace(interval[0], interval[1], num_samples).view(-1, 1)
     # 定义函数解析器
-    if func=="func2":
-        f=piecewise_hard
+    def parse_function(expr: str):
+        expr = expr.replace("cos30x", "np.cos(30*x_np)")
+        expr = expr.replace("sin100x", "np.sin(100*x_np)")
+        expr = expr.replace("cos5x", "np.cos(5*x_np)")
+        def f(x_tensor):
+            x_np = x_tensor.numpy()
+            y_np = eval(expr)
+            return torch.from_numpy(y_np)
+        return f
+
+    f = parse_function(func)
     y = f(x)
     x = x.to(device)
     y = y.to(device)
@@ -131,9 +153,14 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
     total_loss_list=[]
     total_rank_list=[]
     total_useless_rank_list=[]
+    scheduler = optimizer.lr_scheduler.StepLR(optim, step_size=1000, gamma=0.85)
     for step in range(steps):
         # 确保在训练模式
-        model.train()
+        if step >=steps:
+            model.eval()
+        else:
+            model.train()
+        
         if moe_training:
             y_hat, aux_loss = model(x)
             if step % 1000 == 0 :
@@ -154,6 +181,10 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
         optim.zero_grad()
         total_loss.backward()
         optim.step()
+           
+        scheduler.step()
+        
+        
         if step % 100 == 0 or step == steps - 1:
             if moe_training:
                 rank_expert=epi_rank_expert(model,args.interval,args.integral_sample,args.index)
@@ -212,7 +243,7 @@ def main():
     eval_model(data_x, data_y, model, loss_fn)
     torch.set_printoptions(threshold=float('inf'))
     # print("Gates:\n", model.model[0].gates_check)
-    model_mlp=MLP_Model(args.input_size, args.hidden_size*2,args.depth, args.output_size).to(args.device)
+    model_mlp=MLP_Model(args.input_size, args.hidden_size,args.depth, args.output_size).to(args.device)
     optimizer_mlp=get_optimizer(args.optim,model_mlp.parameters(), lr=args.lr)
         
     model_mlp,total_loss_list_mlp,rank_list_mlp,_=train_loop(data_x, data_y, model_mlp,loss_fn, optimizer_mlp, args,args.opt_steps*2,moe_training=False)
@@ -224,6 +255,6 @@ def main():
     plot_dual_axis(np.array(total_loss_list_mlp),np.array(rank_list_mlp),args.opt_steps*2,"mlp")
     plot_dual_axis(np.array(total_loss_list_moe),np.array(useless_rank_list_experts),args.opt_steps,"useless_experts")
 
-
+torch.manual_seed(42)
 main()      
     
