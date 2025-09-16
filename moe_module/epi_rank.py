@@ -14,7 +14,7 @@ class epi_rank_mlp():
         
         self.mlp = [ PartialMOE(model,n,self.index) for n in range(len(model.model)-1)]
         self.device=next(model.parameters()).device
-        self.epsilon =1e-6
+        self.epsilon =1e-3
         interval = eval(interval)  # 例如 "[-1,1]" -> [-1, 1]
         self.x = torch.linspace(interval[0], interval[1], num_samples).view(-1, 1).to(self.device)
         self.num_samples = num_samples
@@ -56,7 +56,7 @@ class epi_rank_mlp():
             eigvals = torch.linalg.eigvalsh(self.M_weight_list[i])
 
             # 设定阈值 epsilon
-            epsilon = 1e-1
+            epsilon = self.epsilon
 
             # 统计大于 epsilon 的特征值数量
             count = (eigvals > epsilon).sum().item()
@@ -151,7 +151,7 @@ class epi_rank_expert():
             eigvals = torch.linalg.eigvalsh(gram[i])
 
             # 设定阈值 epsilon
-            epsilon = 1e-1
+            epsilon = 1e-3
 
             # 统计大于 epsilon 的特征值数量
             count = (eigvals > epsilon).sum().item()
