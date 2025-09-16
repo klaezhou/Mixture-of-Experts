@@ -19,8 +19,8 @@ def parse_args():
     parser.add_argument("--depth", type=int, default=3,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adamw")
-    parser.add_argument("--opt_steps", type=int, default=200000)
-    parser.add_argument("--function", type=str, default="cosx+cos30x+sin100x", help="function")
+    parser.add_argument("--opt_steps", type=int, default=20000)
+    parser.add_argument("--function", type=str, default="cos5x+cos30x+sin100x", help="function")
     parser.add_argument("--interval", type=str, default="[-1,1]")
     parser.add_argument("--num_samples", type=int, default=300)
     parser.add_argument("--k", type=int, default=2,help="top-k selection")
@@ -39,7 +39,7 @@ def _init_data_dim1(func: str, interval: str, num_samples: int,device):
     def parse_function(expr: str):
         expr = expr.replace("cos30x", "np.cos(30*x_np)")
         expr = expr.replace("sin100x", "np.sin(100*x_np)")
-        expr = expr.replace("cosx", "np.cos(x_np)")
+        expr = expr.replace("cos5x", "np.cos(5*x_np)")
         def f(x_tensor):
             x_np = x_tensor.numpy()
             y_np = eval(expr)

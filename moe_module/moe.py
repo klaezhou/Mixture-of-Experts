@@ -159,6 +159,8 @@ class Expert(nn.Module):
             activation,
             nn.Linear(hidden_size,hidden_size), #[H,H]
             activation,
+            nn.Linear(hidden_size,hidden_size), #[H,H]
+            activation,
         )
         self.last_net=nn.Linear(hidden_size,input_size) #[H,I]
         self._init_weights()
