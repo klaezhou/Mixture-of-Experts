@@ -433,7 +433,7 @@ class MLP_Model(nn.Module):
         # )
         self.model = nn.ModuleList([layer1] + [layer2] + # layer1,layer2 相对于moe少了gating 
             [MLP(hidden_size) for _ in range(depth-1)] +
-            [nn.Linear(hidden_size, output_size)]
+            [nn.Linear(hidden_size, output_size, bias=False)]
         )
         self._init_weights()
     def _init_weights(self):

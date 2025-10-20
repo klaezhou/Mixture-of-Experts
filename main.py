@@ -94,6 +94,21 @@ def eval_model(x, y, model, loss_fn,moe_training=True,args=None):
         plt.savefig(f"func_pred_mlp.png")
     plt.show()
 
+# %%
+    if moe_training:
+        # Plot experts functions
+        fig, ax2 = plt.subplots(figsize=(17, 9))
+        ax2.plot(x.cpu().numpy(), y.cpu().numpy(), label='Ground Truth', color='k')
+        for i in range(model.model[0].num_experts):
+            experts_outputs = model.model[0].experts[i](x)
+            # plt.subplot(1, model.model[0].num_experts, i + 1)
+            ax2.plot(x.cpu().numpy(), experts_outputs.detach().cpu().numpy(), label=f'Expert {i+1}')
+            plt.title(f'Experts Function')
+
+        fig.tight_layout()
+        plt.savefig(f"experts_functions.png")  # 保存图像
+        plt.show()
+# %%
 
 
 def main():
@@ -108,7 +123,7 @@ def main():
     eval_model(data_x, data_y, model, loss_fn)
     torch.set_printoptions(threshold=float('inf'))
     # print("Gates:\n", model.model[1].gates_check)
-    model_mlp=MLP_Model(args.input_size, args.hidden_size,args.depth, args.output_size).to(args.device)
+    model_mlp=MLP_Model(args.input_size, args.hidden_size*args.num_experts,args.depth, args.output_size).to(args.device)
     optimizer_mlp=get_optimizer(args.optim,model_mlp.parameters(), lr=args.lr)
         
     model_mlp,total_loss_list_mlp,rank_list_mlp,total_useless_expert_rank_mlp=train_loop(data_x, data_y, model_mlp,loss_fn, optimizer_mlp, args,args.opt_steps,moe_training=False)

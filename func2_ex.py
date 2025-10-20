@@ -31,16 +31,16 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda:3" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
     parser.add_argument("--input_size", type=int, default=1,help="Input size (funcion approximation x) ")
     parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
-    parser.add_argument("--num_experts", type=int, default=10,help="Number of experts")
-    parser.add_argument("--hidden_size", type=int, default=10,help="Hidden size of the MLP")
+    parser.add_argument("--num_experts", type=int, default=5,help="Number of experts")
+    parser.add_argument("--hidden_size", type=int, default=20,help="Hidden size of the MLP")
     parser.add_argument("--depth", type=int, default=3,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adam")
-    parser.add_argument("--opt_steps", type=int, default=10000)
+    parser.add_argument("--opt_steps", type=int, default=20000)
     parser.add_argument("--function", type=str, default="func2", help="function")
     parser.add_argument("--interval", type=str, default="[-1,1]")
     parser.add_argument("--num_samples", type=int, default=300)
-    parser.add_argument("--k", type=int, default=4,help="top-k selection")
+    parser.add_argument("--k", type=int, default=2,help="top-k selection")
     parser.add_argument("--loss_coef", type=float, default=1)
     parser.add_argument("--integral_sample", type=int, default=300, help="integral_sample")
     parser.add_argument("--plt_r", type=int, default=1)
@@ -195,6 +195,20 @@ def eval_model(x, y, model, loss_fn,moe_training=True,args=None):
     else:
         plt.savefig(f"func_pred_mlp.png")
     plt.show()
+
+    if moe_training:
+        # Plot experts functions
+        fig, ax2 = plt.subplots(figsize=(17, 9))
+        ax2.plot(x.cpu().numpy(), y.cpu().numpy(), label='Ground Truth', color='k')
+        for i in range(model.model[0].num_experts):
+            experts_outputs = model.model[0].experts[i](x)
+            # plt.subplot(1, model.model[0].num_experts, i + 1)
+            ax2.plot(x.cpu().numpy(), experts_outputs.detach().cpu().numpy(), label=f'Expert {i+1}')
+            plt.title(f'Experts Function')
+
+        fig.tight_layout()
+        plt.savefig(f"experts_functions2.png")  # 保存图像
+        plt.show()
 
 
 
