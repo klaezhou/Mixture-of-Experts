@@ -27,6 +27,7 @@ def parse_args():
     parser.add_argument("--loss_coef", type=float, default=1)
     parser.add_argument("--integral_sample", type=int, default=1000, help="integral_sample")
     parser.add_argument("--plt_r", type=int, default=1)
+    parser.add_argument("--epsilon", type=float, default=1e-3)
     return parser.parse_args()
 def _init_data_dim1(func: str, interval: str, num_samples: int,device):
     """

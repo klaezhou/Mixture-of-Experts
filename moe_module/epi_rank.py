@@ -58,7 +58,7 @@ class epi_rank_moe():
         
         
 class epi_rank_mlp():
-    def __init__(self, model,interval,num_samples,moe_training=True,index=0):
+    def __init__(self, model,interval,num_samples,epsilon,moe_training=True,index=0):
         """index: defalut 2 ; if no moe, then 1"""
         self.moe_training=moe_training
         self.model = model
@@ -68,7 +68,7 @@ class epi_rank_mlp():
         
         self.mlp = [ PartialMOE(model,n,self.index) for n in range(len(model.model)-index)]
         self.device=next(model.parameters()).device
-        self.epsilon =1e-6
+        self.epsilon = epsilon
         interval = eval(interval)  # 例如 "[-1,1]" -> [-1, 1]
         self.x = torch.linspace(interval[0], interval[1], num_samples).view(-1, 1).to(self.device)
         self.num_samples = num_samples
@@ -110,11 +110,8 @@ class epi_rank_mlp():
         for i in range(len(self.M_weight_list)):
             eigvals = torch.linalg.eigvalsh(self.M_weight_list[i])
 
-            # 设定阈值 epsilon
-            epsilon = 1e-2
-
             # 统计大于 epsilon 的特征值数量
-            count = (eigvals > epsilon).sum().item()
+            count = (eigvals > self.epsilon).sum().item()
             rank_list.append(count)
         self.rank_list = rank_list
         return rank_list
@@ -156,11 +153,8 @@ class epi_rank_mlp():
         for i in range(len(self.M_weight_list_experts)):
             eigvals = torch.linalg.eigvalsh(self.M_weight_list_experts[i])
 
-            # 设定阈值 epsilon
-            epsilon = 1e-2
-
             # 统计大于 epsilon 的特征值数量
-            count = (eigvals > epsilon).sum().item()
+            count = (eigvals > self.epsilon).sum().item()
             rank_list_experts.append(count)
         rank_list_experts.append(sum(rank_list_experts[:-1]) - rank_list_experts[-1])
         self.rank_list_experts = rank_list_experts

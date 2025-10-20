@@ -54,7 +54,7 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
                 # rank_moe=epi_rank_moe(model,args.interval,args.integral_sample)
                 # rank=rank_moe.rank_moe()
                 
-                rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample)
+                rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample, args.epsilon)
                 rank_list=rank_mlp.rank_mlp()
                 total_rank_list.append(rank_list[0])
                 rank_list_experts=rank_mlp.experts_rank_mlp()
@@ -134,7 +134,7 @@ def main():
     plot_dual_axis(np.array(total_loss_list_mlp),np.array(rank_list_mlp),args.opt_steps,"mlp")
     plot_expert_useless_rank(np.array(total_loss_list_moe),np.array(total_useless_expert_rank_moe),args.opt_steps,"moe")
 
-
+54
 if __name__ == "__main__":
     main()      
     
