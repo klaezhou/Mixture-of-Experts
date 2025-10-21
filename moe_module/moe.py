@@ -150,31 +150,31 @@ class Expert(nn.Module):
     - input_size (int): The size of the input layer.
     - hidden_size (int): The size of the hidden layer.
     """
-    def __init__(self,input_size,hidden_size,activation=nn.Tanh()):
+    def __init__(self,input_size,hidden_size,output_size,depth,activation=nn.Tanh()):
+        self.depth=depth
         super(Expert, self).__init__()
-        self.net=nn.Sequential(
-            nn.Linear(input_size,hidden_size), #[I,H]
-            activation,
-            nn.Linear(hidden_size,hidden_size), #[H,H]
-            activation,
-            nn.Linear(hidden_size,hidden_size), #[H,H]
-            activation,
-            nn.Linear(hidden_size,hidden_size), #[H,H]
-            activation,
-        )
-        self.last_net=nn.Linear(hidden_size,input_size) #[H,I]
+        self.activation=activation
+        layer_list = []
+        layer_list.append(nn.Linear(input_size,hidden_size))  #[I,H]
+        for i in range(self.depth-1):
+            layer_list.append(nn.Linear(hidden_size,hidden_size))  #[H,H]
+        layer_list.append(nn.Linear(hidden_size,output_size))  #[H,I]
+        self.net = nn.ModuleList(layer_list)
         self._init_weights()
         
     
     def _init_weights(self):
-            for m in self.modules():
+            for m in self.net.modules():
                 if isinstance(m, nn.Linear):
                     init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
                     if m.bias is not None:
                         init.zeros_(m.bias)
-    def forward(self,x):
-        x = self.net(x)
-        return self.last_net(x)
+    def forward(self, y):
+        for i, layer in enumerate(self.net[:-1]):
+            y = layer(y)
+            y = self.activation(y)
+        y = self.net[-1](y)
+        return y
 
 
 class Gating(nn.Module):
@@ -218,16 +218,18 @@ class MoE(nn.Module):
     - num_experts (int): The number of experts.
     - hidden_size (int): The size of the hidden layer.
     """
-    def __init__(self,input_size,num_experts,hidden_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
+    def __init__(self,input_size,num_experts,hidden_size,depth,output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
         super(MoE, self).__init__()
         torch.set_default_dtype(torch.float64)
         self.k=k
+        self.depth = depth
         self.loss_coef = loss_coef
         self.num_experts = num_experts
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.output_size = output_size
         self.experts = nn.ModuleList(
-            [Expert(self.input_size,self.hidden_size,activation) for _ in range(num_experts)]
+            [Expert(self.input_size,self.hidden_size,self.output_size,self.depth,activation) for _ in range(num_experts)]
             )
         self.register_buffer("mean", torch.tensor([0.0]))
         self.register_buffer("std", torch.tensor([1.0]))
@@ -383,7 +385,7 @@ class MLP(nn.Module):
 
 # example model class MoE_Model
 class MOE_Model(nn.Module):
-    def __init__(self, input_size, num_experts, hidden_size, depth, output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
+    def __init__(self, input_size, num_experts, hidden_size, depth, output_size ,k=2,loss_coef=1e-2,activation=nn.Tanh()):
         super(MOE_Model, self).__init__()
         self.input_size = input_size
         self.num_experts = num_experts
@@ -392,8 +394,8 @@ class MOE_Model(nn.Module):
         self.output_size = output_size
         self.k=k
         self.loss_coef=loss_coef
-        layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), nn.Tanh()))
-        self.moe=MoE(input_size, num_experts, hidden_size,self.k,self.loss_coef,activation)
+        # layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), nn.Tanh()))
+        self.moe=MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
         self.model = nn.ModuleList(
             # [layer1] +  #depth 注意大于等于2
             [self.moe]
@@ -418,21 +420,21 @@ class MOE_Model(nn.Module):
     
 
 class MLP_Model(nn.Module):
-    def __init__(self, input_size, hidden_size, depth, output_size):
+    def __init__(self, input_size, hidden_size, depth, output_size, activation=nn.Tanh()):
         super(MLP_Model, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.depth = depth
         self.output_size = output_size
-        layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), nn.Tanh()))
-        layer2= nn.Sequential(*(nn.Linear(hidden_size, hidden_size), nn.Tanh()))   #nn.Softmax(1)
+        layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), activation))
+        # layer2= nn.Sequential(*(nn.Linear(hidden_size, hidden_size), nn.Tanh()))   #nn.Softmax(1)
         # 注意不要让激活函数单独占一个list位置，会影响rank的输出
         # self.model = nn.ModuleList( [layer1]+ [layer2]+ # layer1,layer2 相对于moe少了gating 
         #     [MLP(hidden_size) for _ in range(depth-1)] +
         #     [nn.Linear(hidden_size, output_size)]
         # )
-        self.model = nn.ModuleList([layer1] + [layer2] + # layer1,layer2 相对于moe少了gating 
-            [MLP(hidden_size) for _ in range(depth-1)] +
+        self.model = nn.ModuleList([layer1] + # layer1,layer2 相对于moe少了gating 
+            [MLP(hidden_size, activation) for _ in range(depth-1)] +
             [nn.Linear(hidden_size, output_size, bias=False)]
         )
         self._init_weights()

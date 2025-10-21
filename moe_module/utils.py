@@ -12,37 +12,42 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate.")
     parser.add_argument("--device", type=str, default="cuda:5" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
-    parser.add_argument("--input_size", type=int, default=1,help="Input size (funcion approximation x) ")
+    parser.add_argument("--input_size", type=int, default=2,help="Input size (funcion approximation x) ")
     parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
-    parser.add_argument("--num_experts", type=int, default=4,help="Number of experts")
-    parser.add_argument("--hidden_size", type=int, default=5,help="Hidden size of the MLP")
+    parser.add_argument("--num_experts", type=int, default=5,help="Number of experts")
+    parser.add_argument("--hidden_size", type=int, default=10,help="Hidden size of each expert")
     parser.add_argument("--depth", type=int, default=3,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adamw")
     parser.add_argument("--opt_steps", type=int, default=20000)
-    parser.add_argument("--function", type=str, default="sin(10/(x+1+2e-1))", help="function")
-    parser.add_argument("--interval", type=str, default="[-1,1]")
-    parser.add_argument("--num_samples", type=int, default=1000)
-    parser.add_argument("--k", type=int, default=1,help="top-k selection")
+    parser.add_argument("--activation", type=str, default="tanh", help="activation_function")
+    parser.add_argument("--init_func", type=str, default="-sin(pi*x)", help="function")
+    parser.add_argument("--x_interval", type=str, default="[-1,1]")
+    parser.add_argument("--t_interval", type=str, default="[0,1]")
+    parser.add_argument("--x_num_samples", type=int, default=400)
+    parser.add_argument("--t_num_samples", type=int, default=200)
+    parser.add_argument("--k", type=int, default=2,help="top-k selection")
     parser.add_argument("--loss_coef", type=float, default=1)
-    parser.add_argument("--integral_sample", type=int, default=1000, help="integral_sample")
+    parser.add_argument("--x_integral_sample", type=int, default=200, help="x_integral_sample")
+    parser.add_argument("--t_integral_sample", type=int, default=100, help="t_integral_sample")
+    parser.add_argument("--nu", type=float, default=0.01,help="nu in equation u_t + u*u_x - nu*u_xx=0")
     parser.add_argument("--plt_r", type=int, default=1)
     parser.add_argument("--epsilon", type=float, default=1e-3)
+    parser.add_argument("--loss_coef_init", type=float, default=1)
+    parser.add_argument("--loss_coef_bnd", type=float, default=1)
     return parser.parse_args()
-def _init_data_dim1(func: str, interval: str, num_samples: int,device):
+def _init_data_dim1(func: str, x_interval: str, t_interval: str, x_num_samples: int, t_num_samples: int, device):
     """
     初始化数据 
     """
-    interval = eval(interval)  # 例如 "[-1,1]" -> [-1, 1]
+    x_interval = eval(x_interval)  # 例如 "[-1,1]" -> [-1, 1]
+    t_interval = eval(t_interval)
     # x = (interval[1] - interval[0]) * torch.rand(num_samples, 1) + interval[0]
-    x=torch.linspace(interval[0], interval[1], num_samples).view(-1, 1)
+    x=torch.linspace(x_interval[0], x_interval[1], x_num_samples).view(-1, 1)
+    t=torch.linspace(t_interval[0], t_interval[1], t_num_samples).view(-1, 1)
     # 定义函数解析器
     def parse_function(expr: str):
-        expr = expr.replace("sin(10/(x+1+2e-1))", "np.sin(10*(x_np + 1 + 2e-1)**-1)")
-        expr = expr.replace("(x+1+1e-1)", "(x_np + 1 + 1e-1)")
-        expr = expr.replace("cos30x", "np.cos(30*x_np)")
-        expr = expr.replace("sin100x", "np.sin(100*x_np)")
-        expr = expr.replace("cos5x", "np.cos(5*x_np)")
+        expr = expr.replace("-sin(pi*x)", "-np.sin(np.pi*x_np)")
         def f(x_tensor):
             x_np = x_tensor.numpy()
             y_np = eval(expr)
@@ -50,10 +55,30 @@ def _init_data_dim1(func: str, interval: str, num_samples: int,device):
         return f
 
     f = parse_function(func)
-    y = f(x)
-    x = x.to(device)
-    y = y.to(device)
-    return x, y
+    u_init = f(x)
+
+    X, T = torch.meshgrid(x.squeeze(), t[0].squeeze(), indexing='ij')
+    X_init = torch.stack([X.flatten(), T.flatten()], dim=1)
+    X_init = X_init.to(device)
+
+    X, T = torch.meshgrid(x[[0,-1]].squeeze(), t[1:].squeeze(), indexing='ij')
+    X_bnd = torch.stack([X.flatten(), T.flatten()], dim=1)
+    X_bnd = X_bnd.to(device)
+
+    X, T = torch.meshgrid(x[1:-1].squeeze(), t[1:].squeeze(), indexing='ij')
+    X_f = torch.stack([X.flatten(), T.flatten()], dim=1)
+    X_f = X_f.to(device)
+
+    X, T = torch.meshgrid(x.squeeze(), t.squeeze(), indexing='ij')
+    X_total = torch.stack([X.flatten(), T.flatten()], dim=1)
+    X_total = X_total.to(device)
+
+    X_init = X_init.to(device)
+    X_bnd = X_bnd.to(device)
+    X_f = X_f.to(device)
+    X_total = X_total.to(device)
+    u_init = u_init.to(device)
+    return X_init, X_bnd, X_f, X_total, u_init
 
 def get_optimizer(name, model_params, lr=1e-3):
     name = name.lower()
