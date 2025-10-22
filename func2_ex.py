@@ -31,13 +31,13 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda:3" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
     parser.add_argument("--input_size", type=int, default=1,help="Input size (funcion approximation x) ")
     parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
-    parser.add_argument("--num_experts", type=int, default=20,help="Number of experts")
-    parser.add_argument("--hidden_size", type=int, default=50,help="Hidden size of the MLP")
+    parser.add_argument("--num_experts", type=int, default=5,help="Number of experts")
+    parser.add_argument("--hidden_size", type=int, default=80,help="Hidden size of the MLP")
     parser.add_argument("--depth", type=int, default=3,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adam")
-    parser.add_argument("--opt_steps", type=int, default=20000)
-    parser.add_argument("--function", type=str, default="cos5x+sin100x+cos30x", help="function")
+    parser.add_argument("--opt_steps", type=int, default=40000)
+    parser.add_argument("--function", type=str, default="cos5x+sin100x+cos30x^2", help="function")
     parser.add_argument("--interval", type=str, default="[-1,1]")
     parser.add_argument("--num_samples", type=int, default=300)
     parser.add_argument("--k", type=int, default=2,help="top-k selection")
@@ -50,32 +50,8 @@ def parse_args():
 
 
 def piecewise_hard(x: torch.Tensor):
-    y = torch.empty_like(x, dtype=torch.float64)
-
-    # 1) 振荡段：增加幅度变化，让振荡更复杂
-    m1 = (x >= -1.0) & (x < -0.6)
-    y[m1] = -0.5 + (0.2 + 0.1 * x[m1]) * torch.sin(6 * torch.pi * x[m1])  # 幅度随 x 改变
-
-    # 2) 常值段：变成缓慢的二次曲线 + 跳跃
-    m2 = (x >= -0.6) & (x < -0.2)
-    y[m2] = 1.3 + 0.5 * (x[m2] + 0.4)**2  # 二次上凸
-
-    # 3) 线性段：加一点正弦扰动
-    m3 = (x >= -0.2) & (x < 0.0)
-    y[m3] = -0.1 + 2.0 * (x[m3] + 0.2) + 0.1 * torch.sin(10 * torch.pi * x[m3])
-
-    # 4) 高频段：叠加两种频率
-    m4 = (x >= 0.0) & (x < 0.2)
-    y[m4] = 1.0 + 0.1 * torch.sin(24 * torch.pi * x[m4]) + 0.05 * torch.sin(60 * torch.pi * x[m4])
-
-    # 5) 尖点段：换成分段绝对值 + 三角函数组合
-    m5 = (x >= 0.2) & (x < 0.6)
-    y[m5] = torch.abs(3 * x[m5] - 1.0) - 1.0 + 0.05 * torch.sin(15 * torch.pi * x[m5])
-
-    # 6) 光滑二次段：换成三次多项式 + 平滑余弦
-    m6 = (x >= 0.6) & (x <= 1.0)
-    y[m6] = 1.2 - (x[m6] - 0.6)**2 + 0.1 * torch.cos(5 * torch.pi * x[m6]) + 0.2 * (x[m6] - 0.6)**3
-
+    # 方波: sign(sin(2πx / period))
+    y = torch.sign(torch.sin(10*torch.pi*x))
     return y
 
 def plot_dual_axis(loss: np.ndarray, rank: np.ndarray, step: int,name):
@@ -114,8 +90,8 @@ def plot_dual_axis(loss: np.ndarray, rank: np.ndarray, step: int,name):
 #     # x = (interval[1] - interval[0]) * torch.rand(num_samples, 1) + interval[0]
 #     x=torch.linspace(interval[0], interval[1], num_samples).view(-1, 1)
 #     # 定义函数解析器
-#     if func=="func2":
-#         f=piecewise_hard
+    
+#     f=piecewise_hard
 #     y = f(x)
 #     noise_level = 0.05  # 控制噪声幅度，可调
 #     # y = y + noise_level * torch.randn_like(y)
@@ -133,7 +109,7 @@ def _init_data_dim1(func: str, interval: str, num_samples: int,device):
     x=torch.linspace(interval[0], interval[1], num_samples).view(-1, 1)
     # 定义函数解析器
     def parse_function(expr: str):
-        expr = expr.replace("cos30x", "np.cos(30*x_np)")
+        expr = expr.replace("cos30x^2", "np.cos(30*x_np*x_np)")
         expr = expr.replace("sin100x", "np.sin(100*x_np)")
         expr = expr.replace("cos5x", "np.cos(5*x_np)")
         def f(x_tensor):

@@ -182,14 +182,89 @@ class Expert_output(nn.Module):
         self.model=model
         self.n=n # expert index
         self.index=index # moe layer index moe层的位置，默认model里只包含一个moe层，其余均为fcnn
-        self.mlp=self.model.model[:self.index]
-        self.expert=self.model.model[self.index].experts[self.n]
+        self.expert=self.model.model.experts[self.n]
         # print("expert output:",self.expert)
     
     def forward(self,x):
-        if self.index!=0:
-            x=self.mlp(x)
         x=self.expert(x)
         return x
+
+class flatten_rank():
+    def __init__(self, model,interval,num_samples):
+        """
+        This is a class for computing the rank of a flatten model. --1D
+        Parameters:
+        model: class MOE_Model in moe.py
+        interval: the interval of the input"
+        num_samples: the number of samples
+        
+        """
+        self.model=model
+        self.moe=self.model.moe
+        self.experts=self.moe.experts # modeul.experts 是一个list
+        self.gates=self.moe.gating_network
+        self.flatten_moe=flatten_moe(model,self.moe.k)
+        interval = eval(interval)  # 例如 "[-1,1]" -> [-1, 1]
+        self.device=next(model.parameters()).device
+        self.x = torch.linspace(interval[0], interval[1], num_samples).view(-1, 1).to(self.device)
+        self.num_samples = num_samples
+        self.M_weight=self.compute_matrix()
+        self.rank=0
         
     
+    def compute_matrix(self):
+                d_matrix=self.flatten_moe(self.x)
+                d_matrix=d_matrix.detach()
+
+                #init weight matrix, numerical
+                def diag_weight(size):
+                    #梯形公式
+                    weights = torch.ones(size)
+                    weights[0] = weights[-1] = 0.5
+                    diag_matrix = torch.diag(weights).to(self.device)
+                    return diag_matrix
+                weight_matrix=diag_weight(self.num_samples)
+                #D.T W D
+                M_weight = torch.matmul(d_matrix.t(), weight_matrix)
+                M_weight = torch.matmul(M_weight, d_matrix)
+                # y_np = d_matrix.cpu().numpy()
+                # print("moe ouput:", y_np.shape)
+                return  M_weight
+    
+        
+    def rank_mlp(self):
+        gram=self.M_weight
+        
+        eigvals = torch.linalg.eigvalsh(gram)
+
+        # 设定阈值 epsilon
+        epsilon = 1e-3
+
+        # 统计大于 epsilon 的特征值数量
+        count = (eigvals > epsilon).sum().item()
+        self.rank = count
+        return count
+    
+     
+class flatten_moe(nn.Module):
+    def __init__(self, model,k):
+        super().__init__()
+        self.model = model
+        self.moe=self.model.moe
+        self.k=k
+        self.experts=self.model.model.experts # modeul.experts 是一个list
+        self.gates=self.moe.gating_network
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, x):
+        
+# 获取 topk 的索引
+        noisy,_,_=self.gates(x,False)
+        values, indices= torch.topk(noisy,k=self.k,dim=1) 
+        values=self.softmax(values)
+        zeros= torch.zeros_like(noisy, requires_grad=True)
+        gates=zeros.scatter(1, indices, values)
+        y=torch.stack([gates[:,i].view(-1, 1)*self.experts[i](x) for i in range(len(self.experts))])
+        y = y.permute(1, 0, 2)
+        y= y.reshape(y.shape[0],-1)
+        return y

@@ -156,6 +156,8 @@ class Expert(nn.Module):
             activation,
             nn.Linear(hidden_size,hidden_size), #[H,H]
             activation,
+            nn.Linear(hidden_size,hidden_size), #[H,H]
+            activation,
         )
         # self.activation=activation
         # self.net=MLP_Model(input_size, hidden_size,depth, output_size=hidden_size)
@@ -185,8 +187,15 @@ class Gating(nn.Module):
     def __init__(self,input_size,num_experts,noise_epsilon=1e-6):
         super(Gating, self).__init__()
         self.net=nn.Sequential(
-            nn.Linear(input_size,num_experts) #[I,H]
+            nn.Linear(input_size,num_experts)
+            #[I,H]
         )
+        # self.net=nn.Sequential(
+        #     nn.Linear(input_size,num_experts),
+        #     nn.ReLU(),
+        #     nn.Linear(num_experts,num_experts)
+        #     #[I,H]
+        # )
         self.noisy=nn.Linear(input_size,num_experts)
         self.softplus = nn.Softplus()
         self.noise_epsilon=noise_epsilon
@@ -393,14 +402,14 @@ class MOE_Model(nn.Module):
     
 
 class MLP_Model(nn.Module):
-    def __init__(self, input_size, hidden_size, depth, output_size):
+    def __init__(self, input_size, hidden_size, depth, output_size,extension=1):
         super(MLP_Model, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.depth = depth
         self.output_size = output_size
-        layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), nn.Tanh()))
-        layer2= nn.Sequential(*(nn.Linear(hidden_size, hidden_size), nn.Tanh()))
+        layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size*extension), nn.Tanh()))
+        layer2= nn.Sequential(*(nn.Linear(hidden_size*extension, hidden_size), nn.Tanh()))
         # 注意不要让激活函数单独占一个list位置，会影响rank的输出
         self.model = nn.ModuleList( [layer1]+ [layer2]+ # layer1,layer2 相对于moe少了gating 
             [MLP(hidden_size) for _ in range(depth-1)] +
@@ -454,3 +463,40 @@ class Full_MOE_Model(nn.Module):
             else:
                 x = layer(x)
         return x,loss
+    
+class MOE_modify_beta(nn.Module):   
+    def __init__(self, input_size, num_experts, hidden_size, depth, output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
+        super(MOE_modify_beta, self).__init__()
+        self.input_size = input_size
+        self.num_experts = num_experts
+        self.hidden_size = hidden_size
+        self.depth = depth
+        self.output_size = output_size
+        self.k=k
+        self.loss_coef=loss_coef
+        self.moe=MoE(input_size, num_experts, hidden_size,self.k,self.loss_coef,activation)
+        self.model=self.moe
+
+        self.Beta=nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, hidden_size)
+        )
+        
+        self._init_weights()
+    def adlosscoff(self,decrease_rate):
+        self.moe.loss_coef=self.moe.loss_coef*decrease_rate
+        return
+    def _init_weights(self):
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
+                    if m.bias is not None:
+                        init.zeros_(m.bias)
+    def forward(self, x):
+        output,loss=self.model(x, self.training)
+        beta=self.Beta(x)
+        # print(f"beta shape: {beta.shape},output shape: {output.shape}")
+        output=(output*beta).sum(dim=1,keepdim=True)
+        # print(f"output shape: {output.shape}")
+        return output,loss
