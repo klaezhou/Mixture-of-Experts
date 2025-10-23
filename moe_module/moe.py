@@ -149,30 +149,32 @@ class Expert(nn.Module):
     - input_size (int): The size of the input layer.
     - hidden_size (int): The size of the hidden layer.
     """
-    def __init__(self,input_size,hidden_size,activation=nn.Tanh(),depth=2):
+    def __init__(self,input_size,hidden_size,output_size,depth,activation=nn.Tanh()):
+        self.depth=depth
         super(Expert, self).__init__()
-        self.net=nn.Sequential(
-            nn.Linear(input_size,hidden_size), #[I,H]
-            activation,
-            nn.Linear(hidden_size,hidden_size), #[H,H]
-            activation,
-            nn.Linear(hidden_size,hidden_size), #[H,H]
-            activation,
-        )
-        # self.activation=activation
-        # self.net=MLP_Model(input_size, hidden_size,depth, output_size=hidden_size)
+        self.activation=activation
+        layer_list = []
+        layer_list.append(nn.Linear(input_size,hidden_size))  #[I,H]
+        for i in range(self.depth-1):
+            layer_list.append(nn.Linear(hidden_size,hidden_size))  #[H,H]
+        layer_list.append(nn.Linear(hidden_size,hidden_size))  #[H,I] zhou's model
+        self.net = nn.ModuleList(layer_list)
         self._init_weights()
         
     
     def _init_weights(self):
-            for m in self.modules():
+            for m in self.net.modules():
                 if isinstance(m, nn.Linear):
                     init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
                     if m.bias is not None:
                         init.zeros_(m.bias)
-    def forward(self,x):
-        x=self.net(x)
-        return x #[H,]
+    def forward(self, y):
+        for i, layer in enumerate(self.net[:-1]):
+            y = layer(y)
+            y = self.activation(y)
+        y = self.net[-1](y)
+        y = self.activation(y) #zhou's model
+        return y
 
 
 class Gating(nn.Module):
@@ -184,7 +186,7 @@ class Gating(nn.Module):
     - num_experts (int): The number of experts.
     - noise_epsilon (float): The noise epsilon value. default is 1e-4.
     """
-    def __init__(self,input_size,num_experts,noise_epsilon=1e-6):
+    def __init__(self,input_size,num_experts,noise_epsilon=1e-6,gamma=2,R=2):
         super(Gating, self).__init__()
         self.net=nn.Sequential(
             nn.Linear(input_size,num_experts)
@@ -199,18 +201,34 @@ class Gating(nn.Module):
         self.noisy=nn.Linear(input_size,num_experts)
         self.softplus = nn.Softplus()
         self.noise_epsilon=noise_epsilon
+        
+
+                
+        self.udi_init(self.net[0], gamma, R)
+        self.net[0].udi_initialized = True
+    def udi_init(self, layer, gamma, R):
+            # 取出层参数
+            weight = torch.randn_like(layer.weight)  # 随机方向
+            # 每一行归一化到单位球面（a_j）
+            weight = F.normalize(weight, p=2, dim=1)
+            # 可选缩放 γ
+            layer.weight.data = gamma * weight
+            # 偏置均匀分布在 [0, R]
+            layer.bias.data.uniform_(0.0, R)
+
     def forward(self,x,train):
         """ 
         - train (bool): Whether to train the model. Only add the noise when training.
         """
         gates=self.net(x)
         noisy_stddev=None 
-        if train:
-            noisy_stddev=self.softplus(self.noisy(x)) + self.noise_epsilon 
-            std = torch.randn_like(gates)  
-            output= gates + noisy_stddev * std
-        else:
-            output = gates
+        # if train:
+        #     noisy_stddev=self.softplus(self.noisy(x)) + self.noise_epsilon 
+        #     std = torch.randn_like(gates)  
+        #     output= gates + noisy_stddev * std
+        # else:
+        #     output = gates
+        output=gates
         
         return output, gates,noisy_stddev#[E,] noisy - clean-nosiy_stddev
         
@@ -223,16 +241,19 @@ class MoE(nn.Module):
     - num_experts (int): The number of experts.
     - hidden_size (int): The size of the hidden layer.
     """
-    def __init__(self,input_size,num_experts,hidden_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
+    def __init__(self,input_size,num_experts,hidden_size,depth,output_size,k=2,loss_coef=1e-2,activation=nn.Tanh(),epsilon=1e-2):
         super(MoE, self).__init__()
         torch.set_default_dtype(torch.float64)
         self.k=k
+        self.depth = depth
         self.loss_coef = loss_coef
         self.num_experts = num_experts
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.epsilon = epsilon
         self.experts = nn.ModuleList(
-            [Expert(self.input_size,self.hidden_size,activation) for _ in range(num_experts)]
+            [Expert(self.input_size,self.hidden_size,self.output_size,self.depth,activation) for _ in range(num_experts)]
             )
         self.register_buffer("mean", torch.tensor([0.0]))
         self.register_buffer("std", torch.tensor([1.0]))
@@ -261,8 +282,8 @@ class MoE(nn.Module):
         m = noisy_top_values.size(1)
         top_values_flat = noisy_top_values.flatten()
 
-        threshold_positions_if_in = torch.arange(batch, device=clean_values.device) * m + self.k
-        threshold_if_in = torch.unsqueeze(torch.gather(top_values_flat, 0, threshold_positions_if_in), 1)
+        threshold_positions_if_in = torch.arange(batch, device=clean_values.device) * m + self.k            #[batch]
+        threshold_if_in = torch.unsqueeze(torch.gather(top_values_flat, 0, threshold_positions_if_in), 1)   #[batch,1]
         is_in = torch.gt(noisy_values, threshold_if_in)
         threshold_positions_if_out = threshold_positions_if_in - 1
         threshold_if_out = torch.unsqueeze(torch.gather(top_values_flat, 0, threshold_positions_if_out), 1)
@@ -271,7 +292,8 @@ class MoE(nn.Module):
         prob_if_in = normal.cdf((clean_values - threshold_if_in)/noise_stddev)
         prob_if_out = normal.cdf((clean_values - threshold_if_out)/noise_stddev)
         prob = torch.where(is_in, prob_if_in, prob_if_out)
-        return prob
+        return prob #[batch,num_experts]
+
     def _gates_to_load(self, gates):
         """Compute the true load per expert, given the gates.
         The load is the number of examples for which the corresponding gate is >0.
@@ -281,6 +303,7 @@ class MoE(nn.Module):
         a float32 `Tensor` of shape [n]
         """
         return (gates > 0).sum(0)
+    
     def cv_squared(self, x):
         """The squared coefficient of variation of a sample.
         Useful as a loss to encourage a positive distribution to be more uniform.
@@ -297,11 +320,15 @@ class MoE(nn.Module):
         if x.shape[0] == 1:
             return torch.tensor([0], device=x.device, dtype=x.dtype)
         return x.var() / (x.mean()**2 + eps)
+    
+
+    
     def topkGating(self,x,train):
             ## topk--> softmax
             noisy,clean,noisy_stddev=self.gating_network(x,train)
-            values, indices= torch.topk(noisy,k=self.k,dim=1) 
-            top_logits,_=torch.topk(noisy,k=self.k+1,dim=1) #values: [k,] indices: [k,]
+            values, indices= torch.topk(noisy,k=self.k,dim=-1) 
+            # top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,] zhou's model
+            
             values=self.softmax(values)
             zeros= torch.zeros_like(noisy, requires_grad=True)
             gates=zeros.scatter(1, indices, values)
@@ -313,18 +340,22 @@ class MoE(nn.Module):
             # zeros = torch.zeros_like(Gating, requires_grad=True)
             # gates = zeros.scatter(1, indices, top_k_gates)#Gating: [E,]
             #balance loss
-            if  train:
-                load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0)
-            else:
-                load = self._gates_to_load(gates)
-                load=load.float()
+            # if  train:
+            #     load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0) #[num_experts,]
+            # else:
+            #     load = self._gates_to_load(gates)
+            #     load=load.float()   #zhou'model
+            load=0
                 
             
             return gates,load
         
         
     def forward(self,x,train):
-        gates,load= self.topkGating(x,train) #[E,]
+        gates,_,_=self.gating_network(x,train)
+        gates= gates/self.epsilon
+        gates= self.softmax(gates)
+        # gates,load= self.topkGating(x,train) #[E,] ,zhou'model
         self.gates_check=gates
         # if not train:
         #     # not train-> print gates
@@ -340,7 +371,7 @@ class MoE(nn.Module):
         #balance loss
         #batch wise
         loss_coef=self.loss_coef
-        loss=self.cv_squared(importance) + self.cv_squared(load)
+        loss=self.cv_squared(importance) # + self.cv_squared(load) zhou'model
         loss*=loss_coef
         return y,loss
 
@@ -365,56 +396,27 @@ class MLP(nn.Module):
         return x
 
 # example model class MoE_Model
-class MOE_Model(nn.Module):
-    def __init__(self, input_size, num_experts, hidden_size, depth, output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
-        super(MOE_Model, self).__init__()
-        self.input_size = input_size
-        self.num_experts = num_experts
-        self.hidden_size = hidden_size
-        self.depth = depth
-        self.output_size = output_size
-        self.k=k
-        self.loss_coef=loss_coef
-        self.moe=MoE(input_size, num_experts, hidden_size,self.k,self.loss_coef,activation)
-        self.model = nn.ModuleList(
-            [self.moe] +
-            [MLP(hidden_size,activation) for _ in range(depth -1)] +
-            [nn.Linear(hidden_size, output_size,bias=False)]
-        )
-        self._init_weights()
-    def adlosscoff(self,decrease_rate):
-        self.moe.loss_coef=self.moe.loss_coef*decrease_rate
-        return
-    def _init_weights(self):
-            for m in self.modules():
-                if isinstance(m, nn.Linear):
-                    init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
-                    if m.bias is not None:
-                        init.zeros_(m.bias)
-    def forward(self, x):
-        loss=None
-        for i, layer in enumerate(self.model):
-            if i == 0:  # MoE 层需要 train 参数
-                x,loss = layer(x, self.training)
-            else:
-                x = layer(x)
-        return x,loss
     
 
 class MLP_Model(nn.Module):
-    def __init__(self, input_size, hidden_size, depth, output_size,extension=1):
+    def __init__(self, input_size, hidden_size, depth, output_size, activation=nn.Tanh()):
         super(MLP_Model, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.depth = depth
         self.output_size = output_size
-        layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size*extension), nn.Tanh()))
-        layer2= nn.Sequential(*(nn.Linear(hidden_size*extension, hidden_size), nn.Tanh()))
+        layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), activation))
+        # layer2= nn.Sequential(*(nn.Linear(hidden_size, hidden_size), nn.Tanh()))   #nn.Softmax(1)
         # 注意不要让激活函数单独占一个list位置，会影响rank的输出
-        self.model = nn.ModuleList( [layer1]+ [layer2]+ # layer1,layer2 相对于moe少了gating 
-            [MLP(hidden_size) for _ in range(depth-1)] +
-            [nn.Linear(hidden_size, output_size,bias=False)]
+        # self.model = nn.ModuleList( [layer1]+ [layer2]+ # layer1,layer2 相对于moe少了gating 
+        #     [MLP(hidden_size) for _ in range(depth-1)] +
+        #     [nn.Linear(hidden_size, output_size)]
+        # )
+        self.model = nn.ModuleList([layer1] + # layer1,layer2 相对于moe少了gating 
+            [MLP(hidden_size, activation) for _ in range(depth-1)] +
+            [nn.Linear(hidden_size, output_size, bias=False)]
         )
+        
         self._init_weights()
     def _init_weights(self):
             for m in self.modules():
@@ -428,41 +430,7 @@ class MLP_Model(nn.Module):
             x = layer(x)
         return x
     
-    
-class Full_MOE_Model(nn.Module):
-    def __init__(self, input_size, num_experts, hidden_size, depth, output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
-        super(MOE_Model, self).__init__()
-        self.input_size = input_size
-        self.num_experts = num_experts
-        self.hidden_size = hidden_size
-        self.depth = depth
-        self.output_size = output_size
-        self.k=k
-        self.loss_coef=loss_coef
-        self.moe=MoE(input_size, num_experts, hidden_size,self.k,self.loss_coef,activation)
-        self.model = nn.ModuleList(
-            [self.moe] +
-            [MLP(hidden_size,activation) for _ in range(depth - 1)] +
-            [nn.Linear(hidden_size, output_size)]
-        )
-        self._init_weights()
-    def adlosscoff(self,decrease_rate):
-        self.moe.loss_coef=self.moe.loss_coef*decrease_rate
-        return
-    def _init_weights(self):
-            for m in self.modules():
-                if isinstance(m, nn.Linear):
-                    init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
-                    if m.bias is not None:
-                        init.zeros_(m.bias)
-    def forward(self, x):
-        loss=None
-        for i, layer in enumerate(self.model):
-            if i == 0:  # MoE 层需要 train 参数
-                x,loss = layer(x, self.training)
-            else:
-                x = layer(x)
-        return x,loss
+
     
 class MOE_modify_beta(nn.Module):   
     def __init__(self, input_size, num_experts, hidden_size, depth, output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
@@ -474,7 +442,7 @@ class MOE_modify_beta(nn.Module):
         self.output_size = output_size
         self.k=k
         self.loss_coef=loss_coef
-        self.moe=MoE(input_size, num_experts, hidden_size,self.k,self.loss_coef,activation)
+        self.moe=MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
         self.model=self.moe
 
         self.Beta=nn.Sequential(
@@ -488,11 +456,15 @@ class MOE_modify_beta(nn.Module):
         self.moe.loss_coef=self.moe.loss_coef*decrease_rate
         return
     def _init_weights(self):
-            for m in self.modules():
-                if isinstance(m, nn.Linear):
-                    init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
-                    if m.bias is not None:
-                        init.zeros_(m.bias)
+        import torch.nn.init as init
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                # 如果是 UDI 初始化过的层，就跳过！
+                if getattr(m, "udi_initialized", False):
+                    continue
+                init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    init.zeros_(m.bias)
     def forward(self, x):
         output,loss=self.model(x, self.training)
         beta=self.Beta(x)
