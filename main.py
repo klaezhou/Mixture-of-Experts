@@ -22,6 +22,7 @@ from torch.utils.data import DataLoader
 from torch.autograd import grad
 import matplotlib.pyplot as plt
 import data.bg_gt as bg_gt
+from torch.optim.lr_scheduler import StepLR
 torch.set_default_dtype(torch.float64)
 
 def pde_residual(model, x_t, nu, moe_training=True):
@@ -42,6 +43,7 @@ def pde_residual(model, x_t, nu, moe_training=True):
     return r
 @log_with_time
 def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,steps=100,moe_training=True):
+    scheduler = StepLR(optim, step_size=100, gamma=0.98)
     activation=get_activation(args.activation)
     aux_loss=0
     init_loss=0
@@ -79,6 +81,7 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
         optim.zero_grad()
         total_loss.backward()
         optim.step()
+        scheduler.step()
         if step % 100 == 0 or step == steps - 1:
             pass
             # if moe_training:
@@ -134,9 +137,16 @@ def eval_model(X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training=
         print("MLP_Model Evaluation Results - loss: {:.8f}".format(loss.item()))
 
 
-    x = X_total[:, 0].detach().cpu().numpy()
-    t = X_total[:, 1].detach().cpu().numpy()
-    u_total = u_total.detach().cpu().numpy().flatten()
+
+
+    # 1---------- 绘制预测----------
+    if moe_training:
+        u_pred,_= model(args.X_test)
+    else:
+        u_pred = model(args.X_test)
+    x = args.X_test[:, 0].detach().cpu().numpy()
+    t = args.X_test[:, 1].detach().cpu().numpy()
+    u_pred = u_pred.detach().cpu().numpy().flatten()
 
     # 尝试重建网格（假设 x 是 meshgrid flatten 后的）
     nx = len(np.unique(x))
@@ -144,13 +154,11 @@ def eval_model(X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training=
     X = np.unique(x)
     T = np.unique(t)
     X, T = np.meshgrid(X, T, indexing='ij')
-    u_total = u_total.reshape(nx, nt)
-
-    # 1---------- 绘制预测----------
+    u_pred = u_pred.reshape(nx, nt)
     
     fig, axs = plt.subplots(figsize=(17, 9))
 
-    im0 = axs.contourf(X, T, u_total, levels=100, cmap='coolwarm', vmin=-1, vmax=1)
+    im0 = axs.contourf(X, T, u_pred, levels=100, cmap='coolwarm', vmin=-1, vmax=1)
     axs.set_title("Solution_pred")
     axs.set_xlabel("x")
     axs.set_ylabel("t")
@@ -170,6 +178,15 @@ def eval_model(X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training=
         u_error = torch.abs(u_test - args.gt)
     else:
         u_error = torch.abs(model(args.X_test) - args.gt)
+    rell2=torch.norm(u_error, p=2) / torch.norm(args.gt, p=2)
+    print(f"L2 absolute error: {rell2.item():.8f}")
+    if moe_training:
+        np.save("l2_moe.npy", np.array(rell2.detach().cpu().numpy()))
+    else:
+        np.save("l2_mlp.npy", np.array(rell2.detach().cpu().numpy()))
+    
+
+    
     x = args.X_test[:, 0].detach().cpu().numpy()
     t = args.X_test[:, 1].detach().cpu().numpy()
     u_error = u_error.detach().cpu().numpy().flatten()
@@ -184,9 +201,9 @@ def eval_model(X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training=
     
     fig2, ax2 = plt.subplots(figsize=(10, 6))
 
-    im2 = ax2.contourf(X, T, u_error, levels=100, cmap='viridis', vmin=-1, vmax=1)
+    im2 = ax2.contourf(X, T, u_error, levels=100, cmap='viridis')
     ax2.set_title("Absolute Error")
-    ax2.set_xlabel("x")
+    ax2.set_xlabel("x")   
     ax2.set_ylabel("t")
     fig2.colorbar(im2, ax=ax2)
 
@@ -208,14 +225,16 @@ def main():
     model_moe=MOE_modify_beta(args.input_size, args.num_experts,args.hidden_size,args.depth, args.output_size,args.k,args.loss_coef, activation).to(args.device)
     loss_fn =get_loss_fn(args.lossfn)
     optimizer = get_optimizer(args.optim,model_moe.parameters(), lr=args.lr)
-    model,total_loss_list_moe,rank_list_moe,total_useless_expert_rank_moe=train_loop(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model_moe,loss_fn, optimizer, args,args.opt_steps)
+    model,total_loss_list_moe,rank_list_moe,total_useless_expert_rank_moe=train_loop(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init,\
+        model_moe,loss_fn, optimizer, args,args.opt_steps)
     eval_model(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model, loss_fn,moe_training=True,args=args)
     torch.set_printoptions(threshold=float('inf'))
     # print("Gates:\n", model.model[1].gates_check)
-    model_mlp=MLP_Model(args.input_size, args.hidden_size*2,args.depth, args.output_size, activation).to(args.device)
+    model_mlp=MLP_Model(args.input_size, args.hidden_size*2,args.depth+2, args.output_size, activation).to(args.device)
     optimizer_mlp=get_optimizer(args.optim,model_mlp.parameters(), lr=args.lr)
         
-    model_mlp,total_loss_list_mlp,rank_list_mlp,total_useless_expert_rank_mlp=train_loop(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model_mlp,loss_fn, optimizer_mlp, args,args.opt_steps,moe_training=False)
+    model_mlp,total_loss_list_mlp,rank_list_mlp,total_useless_expert_rank_mlp=train_loop(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init,\
+        model_mlp,loss_fn, optimizer_mlp, args,args.opt_steps,moe_training=False)
     eval_model(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model_mlp, loss_fn,moe_training=False,args=args)
     
     

@@ -1,15 +1,19 @@
 import logging
+import ast
 import time
 from functools import wraps
 import argparse
 import torch
+import math
 from torch import nn
 import torch.optim as optim
 import  numpy as np
 import matplotlib.pyplot as plt
 import sys, os
+from torch.quasirandom import SobolEngine
 sys.path.append(os.path.abspath(os.path.join(__file__, '..', '..')))
 from data import *
+torch.set_default_dtype(torch.float64)
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Mixture-of-Experts model.")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
@@ -17,68 +21,94 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda:3" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
     parser.add_argument("--input_size", type=int, default=2,help="Input size (funcion approximation x) ")
     parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
-    parser.add_argument("--num_experts", type=int, default=5,help="Number of experts")
+    parser.add_argument("--num_experts", type=int, default=2,help="Number of experts")
     parser.add_argument("--hidden_size", type=int, default=20,help="Hidden size of each expert")
-    parser.add_argument("--depth", type=int, default=3,help="Depth of the MOE model")
+    parser.add_argument("--depth", type=int, default=8,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
-    parser.add_argument("--optim", type=str, default="adamw")
+    parser.add_argument("--optim", type=str, default="adam")
     parser.add_argument("--opt_steps", type=int, default=20000)
     parser.add_argument("--activation", type=str, default="tanh", help="activation_function")
     parser.add_argument("--init_func", type=str, default="-sin(pi*x)", help="function")
     parser.add_argument("--x_interval", type=str, default="[-1,1]")
     parser.add_argument("--t_interval", type=str, default="[0,1]")
-    parser.add_argument("--x_num_samples", type=int, default=400)
-    parser.add_argument("--t_num_samples", type=int, default=200)
+    parser.add_argument("--x_num_samples", type=int, default=300)
+    parser.add_argument("--t_num_samples", type=int, default=150)
     parser.add_argument("--k", type=int, default=1,help="top-k selection")
     parser.add_argument("--loss_coef", type=float, default=0)
     parser.add_argument("--x_integral_sample", type=int, default=200, help="x_integral_sample")
     parser.add_argument("--t_integral_sample", type=int, default=100, help="t_integral_sample")
-    parser.add_argument("--nu", type=float, default=0.01,help="nu in equation u_t + u*u_x - nu*u_xx=0")
+    parser.add_argument("--nu", type=float, default=0.01/np.pi,help="nu in equation u_t + u*u_x - nu*u_xx=0")
     parser.add_argument("--plt_r", type=int, default=1)
-    parser.add_argument("--epsilon", type=float, default=1e-3)
-    parser.add_argument("--loss_coef_init", type=float, default=4)
-    parser.add_argument("--loss_coef_bnd", type=float, default=4)
+    parser.add_argument("--epsilon", type=float, default=1e-3,help="epsilon for rank")
+    parser.add_argument("--loss_coef_init", type=float, default=20)
+    parser.add_argument("--loss_coef_bnd", type=float, default=50)
     parser.add_argument("--vtn",type=int,default=150)
     parser.add_argument("--vxn",type=int,default=300)
-    parser.add_argument("--gt",type=torch.Tensor,default=None)
-    parser.add_argument("--X_test",type=torch.Tensor,default=None)
+    parser.add_argument("--gt",type=torch.Tensor,default=None,help="ground truth")
+    parser.add_argument("--X_test",type=torch.Tensor,default=None,help="test data")
     return parser.parse_args()
 def _init_data_dim1(func: str, x_interval: str, t_interval: str, x_num_samples: int, t_num_samples: int, device):
     """
     初始化数据 
     """
-    x_interval = eval(x_interval)  # 例如 "[-1,1]" -> [-1, 1]
-    t_interval = eval(t_interval)
-    # x = (interval[1] - interval[0]) * torch.rand(num_samples, 1) + interval[0]
-    x=torch.linspace(x_interval[0], x_interval[1], x_num_samples).view(-1, 1)
-    t=torch.linspace(t_interval[0], t_interval[1], t_num_samples).view(-1, 1)
+    x_lo, x_hi = ast.literal_eval(x_interval)
+    t_lo, t_hi = ast.literal_eval(t_interval)
+
+    dtype = torch.float64
+    device = torch.device(device)
+    # boundary
+    # 等距网格（用于初值与边界）
+    x_lin = torch.linspace(x_lo, x_hi, x_num_samples, device=device, dtype=dtype).view(-1, 1)  # [Nx,1]
+    t_lin = torch.linspace(t_lo, t_hi, t_num_samples, device=device, dtype=dtype).view(-1, 1)  # [Nt,1]
+
+    #  初值面：t = t0（等距 x）
+    t0 = t_lin[0, 0]
+    X_init = torch.stack([x_lin.squeeze(1), torch.full_like(x_lin.squeeze(1), t0)], dim=1)  # [Nx,2]
+
+    xmin, xmax = x_lin[0, 0], x_lin[-1, 0]
+    X_bnd_left  = torch.stack([torch.full_like(t_lin.squeeze(1), xmin), t_lin.squeeze(1)], dim=1)  # [Nt,2]
+    X_bnd_right = torch.stack([torch.full_like(t_lin.squeeze(1), xmax), t_lin.squeeze(1)], dim=1)  # [Nt,2]
+    X_bnd = torch.cat([X_bnd_left, X_bnd_right], dim=0)  # [2*Nt,2]
+
+    # Interior
+    n_f = max((x_num_samples - 2) * (t_num_samples - 1), 0)
+    if n_f > 0:
+        sobol = SobolEngine(dimension=2, scramble=True)
+        s = sobol.draw(n_f).to(device=device, dtype=dtype)  # in [0,1]^2
+        # 映射到 (x_lo, x_hi) × (t_lo, t_hi]，并避免恰落边界
+        eps_x = 1e-7
+        eps_t = 1e-7
+        x_f = x_lo + (x_hi - x_lo) * (s[:, 0:1] * (1 - 2*eps_x) + eps_x)      # (x_lo, x_hi)
+        t_f = t_lo + (t_hi - t_lo) * (s[:, 1:2] * (1 - eps_t) + eps_t)        # (t_lo, t_hi]
+        X_f = torch.cat([x_f, t_f], dim=1)  # [n_f,2]
+    else:
+        X_f = torch.zeros((0, 2), device=device, dtype=dtype)
+
+    
+    t_interface = torch.linspace(t_lo, t_hi, x_num_samples*5).view(-1, 1)
+    x_interface = torch.full_like(t_interface,0)
+    X_interface = torch.cat([x_interface, t_interface], dim=1).to(device)
+    # 边界和内点合并
+    X_f = torch.cat([X_f, X_interface], dim=0)
+    X_f = torch.unique(X_f, dim=0)
+
+    # 6) 合并点集并去重
+    X_total = torch.cat([X_init, X_bnd, X_f], dim=0)
+    X_total = torch.unique(X_total, dim=0)
+    
+    # Initial
     # 定义函数解析器
     def parse_function(expr: str):
-        expr = expr.replace("-sin(pi*x)", "-np.sin(np.pi*x_np)")
+        expr = expr.replace("-sin(pi*x)", "-torch.sin(math.pi*x)")
         def f(x_tensor):
-            x_np = x_tensor.numpy()
+            x=x_tensor
             y_np = eval(expr)
-            return torch.from_numpy(y_np)
+            return y_np
         return f
 
     f = parse_function(func)
+    x= X_init[:, 0:1] 
     u_init = f(x)
-
-    X, T = torch.meshgrid(x.squeeze(), t[0].squeeze(), indexing='ij')
-    X_init = torch.stack([X.flatten(), T.flatten()], dim=1)
-    X_init = X_init.to(device)
-
-    X, T = torch.meshgrid(x[[0,-1]].squeeze(), t[1:].squeeze(), indexing='ij')
-    X_bnd = torch.stack([X.flatten(), T.flatten()], dim=1)
-    X_bnd = X_bnd.to(device)
-
-    X, T = torch.meshgrid(x[1:-1].squeeze(), t[1:].squeeze(), indexing='ij')
-    X_f = torch.stack([X.flatten(), T.flatten()], dim=1)
-    X_f = X_f.to(device)
-
-    X, T = torch.meshgrid(x.squeeze(), t.squeeze(), indexing='ij')
-    X_total = torch.stack([X.flatten(), T.flatten()], dim=1)
-    X_total = X_total.to(device)
 
     X_init = X_init.to(device)
     X_bnd = X_bnd.to(device)
@@ -213,7 +243,7 @@ def generate_data(vxn,vtn,nu):
     X_test = torch.stack([X.flatten(), T.flatten()], dim=1)
     
     vu=bg_gt.burgers_viscous_time_exact1 ( nu, vxn, vx, vtn, vt )
-    u_flat = vu.T.flatten()  # 先转置再flatten
+    u_flat = vu.flatten()  # 先转置再flatten
     gt= torch.tensor(u_flat).unsqueeze(1) 
     
         # === 4️⃣ 绘图 ===

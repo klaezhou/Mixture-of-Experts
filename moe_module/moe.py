@@ -241,7 +241,7 @@ class MoE(nn.Module):
     - num_experts (int): The number of experts.
     - hidden_size (int): The size of the hidden layer.
     """
-    def __init__(self,input_size,num_experts,hidden_size,depth,output_size,k=2,loss_coef=1e-2,activation=nn.Tanh(),epsilon=1e-2):
+    def __init__(self,input_size,num_experts,hidden_size,depth,output_size,k=2,loss_coef=1e-2,activation=nn.Tanh(),epsilon=1e-1):
         super(MoE, self).__init__()
         torch.set_default_dtype(torch.float64)
         self.k=k
@@ -353,9 +353,12 @@ class MoE(nn.Module):
         
     def forward(self,x,train):
         gates,_,_=self.gating_network(x,train)
+        
         gates= gates/self.epsilon
         gates= self.softmax(gates)
+        
         # gates,load= self.topkGating(x,train) #[E,] ,zhou'model
+        
         self.gates_check=gates
         # if not train:
         #     # not train-> print gates
@@ -418,6 +421,17 @@ class MLP_Model(nn.Module):
         )
         
         self._init_weights()
+        self._report_trainable()
+        
+        
+    def _report_trainable(self):
+            total = 0
+            print("=== Trainable parameters ===")
+            for name, p in self.named_parameters():
+                if p.requires_grad:
+                    n = p.numel()
+                    total += n
+            print(f"Total trainable params: {total}\n")
     def _init_weights(self):
             for m in self.modules():
                 if isinstance(m, nn.Linear):
@@ -444,17 +458,33 @@ class MOE_modify_beta(nn.Module):
         self.loss_coef=loss_coef
         self.moe=MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
         self.model=self.moe
+        # === 2️⃣ Beta 网络（可调 depth） ===
+        layers = []
+        in_dim = input_size
+        # 如果 depth = 1，则只有一层线性映射
+        for i in range(2):
+            layers.append(nn.Linear(in_dim, hidden_size))
+            layers.append(activation)
+            in_dim = hidden_size
 
-        self.Beta=nn.Sequential(
-            nn.Linear(input_size, hidden_size),
-            nn.Tanh(),
-            nn.Linear(hidden_size, hidden_size)
-        )
+        layers.append(nn.Linear(hidden_size, hidden_size,bias=False))
+        self.Beta = nn.Sequential(*layers)
+        # for p in self.Beta.parameters():
+        #     p.requires_grad_(False)
         
         self._init_weights()
-    def adlosscoff(self,decrease_rate):
-        self.moe.loss_coef=self.moe.loss_coef*decrease_rate
-        return
+        self._report_trainable()
+        
+        
+    def _report_trainable(self):
+            total = 0
+            print("=== Trainable parameters ===")
+            for name, p in self.named_parameters():
+                if p.requires_grad:
+                    n = p.numel()
+                    total += n
+            print(f"Total trainable params: {total}\n")
+        
     def _init_weights(self):
         import torch.nn.init as init
         for m in self.modules():
