@@ -44,7 +44,7 @@ from functorch import make_functional, vmap
 import logging
 import torch.nn.init as init
 
-torch.set_default_dtype(torch.float64)
+
 class SparseDispatcher(object):
     """Helper for implementing a mixture of experts.
     The purpose of this class is to create input minibatches for the
@@ -130,7 +130,7 @@ class SparseDispatcher(object):
             stitched = stitched.mul(self._nonzero_gates)
         zeros = torch.zeros(self._gates.size(0), expert_out[-1].size(1), requires_grad=True, device=stitched.device)
         # combine samples that have been processed by the same k experts
-        combined = zeros.index_add(0, self._batch_index, stitched.double())
+        combined = zeros.index_add(0, self._batch_index, stitched.float())
         return combined
 
     def expert_to_gates(self):
@@ -241,9 +241,8 @@ class MoE(nn.Module):
     - num_experts (int): The number of experts.
     - hidden_size (int): The size of the hidden layer.
     """
-    def __init__(self,input_size,num_experts,hidden_size,depth,output_size,k=2,loss_coef=1e-2,activation=nn.Tanh(),epsilon=1e-1):
+    def __init__(self,input_size,num_experts,hidden_size,depth,output_size,k=2,loss_coef=1e-2,activation=nn.Tanh(),epsilon=1e-8):
         super(MoE, self).__init__()
-        torch.set_default_dtype(torch.float64)
         self.k=k
         self.depth = depth
         self.loss_coef = loss_coef
@@ -354,7 +353,7 @@ class MoE(nn.Module):
     def forward(self,x,train):
         gates,_,_=self.gating_network(x,train)
         
-        gates= gates/self.epsilon
+        gates= gates/(self.epsilon+1e-4*torch.abs(gates))
         gates= self.softmax(gates)
         
         # gates,load= self.topkGating(x,train) #[E,] ,zhou'model
@@ -386,13 +385,6 @@ class MLP(nn.Module):
             nn.Linear(self.hidden_size, hidden_size),
             activation
         )
-        self._init_weights()
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
-                if m.bias is not None:
-                    init.zeros_(m.bias)
 
     def forward(self, x):
         x = self.model(x)
@@ -403,46 +395,52 @@ class MLP(nn.Module):
 
 class MLP_Model(nn.Module):
     def __init__(self, input_size, hidden_size, depth, output_size, activation=nn.Tanh()):
-        super(MLP_Model, self).__init__()
-        self.input_size = input_size
+        super().__init__()
+        self.input_size  = input_size
         self.hidden_size = hidden_size
-        self.depth = depth
+        self.depth       = depth
         self.output_size = output_size
-        layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), activation))
-        # layer2= nn.Sequential(*(nn.Linear(hidden_size, hidden_size), nn.Tanh()))   #nn.Softmax(1)
-        # 注意不要让激活函数单独占一个list位置，会影响rank的输出
-        # self.model = nn.ModuleList( [layer1]+ [layer2]+ # layer1,layer2 相对于moe少了gating 
-        #     [MLP(hidden_size) for _ in range(depth-1)] +
-        #     [nn.Linear(hidden_size, output_size)]
-        # )
-        self.model = nn.ModuleList([layer1] + # layer1,layer2 相对于moe少了gating 
-            [MLP(hidden_size, activation) for _ in range(depth-1)] +
-            [nn.Linear(hidden_size, output_size, bias=False)]
-        )
-        
-        self._init_weights()
+
+        assert input_size == 2, "当前归一化假设输入为 [x,t] 两维。"
+
+        # 边界可改成参数传入，这里先保留你的写法
+        self.register_buffer("lb", torch.tensor([-1.0, 0.0]))
+        self.register_buffer("ub", torch.tensor([ 1.0, 1.0]))
+
+        # 建层（建议每层各自一个激活实例）
+        def make_act():
+            return activation.__class__() if isinstance(activation, nn.Module) else activation
+
+        layer1 = nn.Sequential(nn.Linear(input_size, hidden_size), make_act())
+        blocks = [layer1] + [MLP(hidden_size, make_act()) for _ in range(depth - 1)] + [nn.Linear(hidden_size, output_size)]
+        self.model = nn.ModuleList(blocks)
+        self.apply(self._init)
         self._report_trainable()
         
-        
+
     def _report_trainable(self):
-            total = 0
-            print("=== Trainable parameters ===")
-            for name, p in self.named_parameters():
-                if p.requires_grad:
-                    n = p.numel()
-                    total += n
-            print(f"Total trainable params: {total}\n")
-    def _init_weights(self):
-            for m in self.modules():
-                if isinstance(m, nn.Linear):
-                    init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
-                    if m.bias is not None:
-                        init.zeros_(m.bias)
-                        
-    def forward(self, x):
+        total = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"=== Trainable parameters ===\nTotal trainable params: {total}\n")
+
+    @staticmethod
+    def _init(m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_normal_(m.weight, gain=nn.init.calculate_gain('tanh'))
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x, normalize=True):
+        # 保证 dtype/device 一致，防止外部是 float64/GPU 而 buffer 不一致
+        if normalize:
+            lb = self.lb.to(dtype=x.dtype, device=x.device)
+            ub = self.ub.to(dtype=x.dtype, device=x.device)
+            y = 2.0 * (x - lb) / (ub - lb) - 1.0
+        else:
+            y = x.to(dtype=self.lb.dtype, device=self.lb.device)
+
         for i, layer in enumerate(self.model):
-            x = layer(x)
-        return x
+            y = layer(y)
+        return y
     
 
     
@@ -458,11 +456,16 @@ class MOE_modify_beta(nn.Module):
         self.loss_coef=loss_coef
         self.moe=MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
         self.model=self.moe
+        lb=[-1,0]
+        ub=[1,1]
+        self.register_buffer("lb", torch.as_tensor(lb))
+        self.register_buffer("ub", torch.as_tensor(ub))
         # === 2️⃣ Beta 网络（可调 depth） ===
         layers = []
         in_dim = input_size
+        self.moe2=MoE(hidden_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
         # 如果 depth = 1，则只有一层线性映射
-        for i in range(2):
+        for i in range(1):
             layers.append(nn.Linear(in_dim, hidden_size))
             layers.append(activation)
             in_dim = hidden_size
@@ -496,9 +499,11 @@ class MOE_modify_beta(nn.Module):
                 if m.bias is not None:
                     init.zeros_(m.bias)
     def forward(self, x):
-        output,loss=self.model(x, self.training)
+        x = 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
+        output,loss1=self.model(x, self.training)
+        output,loss2=self.moe2(output, self.training)
+        # output=(output).sum(dim=1,keepdim=True)
         beta=self.Beta(x)
-        # print(f"beta shape: {beta.shape},output shape: {output.shape}")
         output=(output*beta).sum(dim=1,keepdim=True)
-        # print(f"output shape: {output.shape}")
+        loss=loss1+loss2
         return output,loss

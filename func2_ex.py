@@ -1,236 +1,205 @@
-# ============================================================================
-# Author: klae-zhou
-# Date   : 2025-06-05
-#  Description:
-#   This is a demo for mixture of experts applied on function 2 approximation.
-# ============
+# -*- coding: utf-8 -*-
+# Minimal PyTorch PINN for 1D Burgers: u_t + u u_x = nu u_xx,  x∈[-1,1], t∈[0,1]
+# IC: u(x,0) = -sin(pi x),  BC: u(-1,t)=u(1,t)=0
 
-import torch
-from torch import nn
-import torch.optim as optim
-import argparse
+import math
 import numpy as np
-from functorch import make_functional, vmap
-from moe_module.moe import MOE_Model,MLP_Model
-from moe_module.utils import get_optimizer, get_loss_fn, log_with_time
-from moe_module.epi_rank import epi_rank_mlp,epi_rank_expert
-# download data
-import torchvision.transforms as transforms
-from torchvision.datasets import CIFAR10
-from torch.utils.data import DataLoader
+import torch
+import torch.nn as nn
+from torch.autograd import grad
+from torch.quasirandom import SobolEngine
 import matplotlib.pyplot as plt
 
-torch.set_default_dtype(torch.float64)
-import torch.optim as optimizer
+# ====== config ======
+torch.set_default_dtype(torch.float64)  # PINN更稳
+device = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
 
+nu = 0.01 / math.pi  # 粘性
+Nx_ic, Nt_ic = 256, 1     # 初值等距点数
+Nt_bc = 256               # 边界等距点数（两侧各 Nt_bc）
+Nf = 10000                # PDE内部点数（Sobol）
+layers = [2, 50, 50, 50, 50, 1]
+adam_steps = 30000         # 训练步数（可加大看看效果）
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Train a Mixture-of-Experts model.")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
-    parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate.")
-    parser.add_argument("--device", type=str, default="cuda:3" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
-    parser.add_argument("--input_size", type=int, default=1,help="Input size (funcion approximation x) ")
-    parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
-    parser.add_argument("--num_experts", type=int, default=5,help="Number of experts")
-    parser.add_argument("--hidden_size", type=int, default=80,help="Hidden size of the MLP")
-    parser.add_argument("--depth", type=int, default=3,help="Depth of the MOE model")
-    parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
-    parser.add_argument("--optim", type=str, default="adam")
-    parser.add_argument("--opt_steps", type=int, default=40000)
-    parser.add_argument("--function", type=str, default="cos5x+sin100x+cos30x^2", help="function")
-    parser.add_argument("--interval", type=str, default="[-1,1]")
-    parser.add_argument("--num_samples", type=int, default=300)
-    parser.add_argument("--k", type=int, default=2,help="top-k selection")
-    parser.add_argument("--loss_coef", type=float, default=1)
-    parser.add_argument("--integral_sample", type=int, default=300, help="integral_sample")
-    parser.add_argument("--plt_r", type=int, default=1)
-    parser.add_argument("--decrease_rate", type=float, default=0.7)
-    parser.add_argument("--index", type=int, default=0,help="index of the expert")
-    return parser.parse_args()
+# ====== data: IC / BC / interior ======
+# 初值：t=0, x in [-1,1]
+x_ic = torch.linspace(-1.0, 1.0, Nx_ic, device=device).view(-1, 1)
+t_ic = torch.zeros_like(x_ic, device=device)
+u_ic = -torch.sin(math.pi * x_ic)  # u(x,0)
 
+X_ic = torch.cat([x_ic, t_ic], dim=1)     # [Nx_ic,2]
 
-def piecewise_hard(x: torch.Tensor):
-    # 方波: sign(sin(2πx / period))
-    y = torch.sign(torch.sin(10*torch.pi*x))
-    return y
+# 边界：x=-1 和 x=1, t in [0,1]
+t_bc = torch.linspace(0.0, 1.0, Nt_bc, device=device).view(-1, 1)
+x_left  = -torch.ones_like(t_bc, device=device)
+x_right =  torch.ones_like(t_bc,  device=device)
 
-def plot_dual_axis(loss: np.ndarray, rank: np.ndarray, step: int,name):
-    z = np.arange(1, step + 1)
+X_bc_left  = torch.cat([x_left,  t_bc], dim=1)
+X_bc_right = torch.cat([x_right, t_bc], dim=1)
+u_bc_left  = torch.zeros_like(t_bc, device=device)
+u_bc_right = torch.zeros_like(t_bc, device=device)
 
-    # 插值处理 rank
-    if len(rank) != step:
-        from scipy.interpolate import interp1d
-        interp = interp1d(np.linspace(0, step - 1, len(rank)), rank, kind='linear', fill_value="extrapolate")
-        rank_interp = interp(np.arange(step))
-    else:
-        rank_interp = rank
+# PDE 内部点：Sobol in (-1,1) × (0,1]
+sobol = SobolEngine(dimension=2, scramble=True)
+s = sobol.draw(Nf).to(device)
+eps = 1e-7
+x_f = -1.0 + 2.0 * (s[:, 0:1] * (1 - 2*eps) + eps)   # (-1,1)
+t_f = (s[:, 1:2] * (1 - eps) + eps)                  # (0,1]
+X_f = torch.cat([x_f, t_f], dim=1)
 
-    fig, ax1 = plt.subplots(figsize=(17, 9))
+# ====== model ======
+class MLP(nn.Module):
+    def __init__(self, layers):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        for i in range(len(layers)-2):
+            self.layers.append(nn.Linear(layers[i], layers[i+1]))
+            self.layers.append(nn.Tanh())
+        self.layers.append(nn.Linear(layers[-2], layers[-1]))
+        # 归一化边界，固定为 [x,t] ∈ [-1,1]×[0,1]
+        self.register_buffer("lb", torch.tensor([-1.0, 0.0], dtype=torch.get_default_dtype()))
+        self.register_buffer("ub", torch.tensor([ 1.0, 1.0], dtype=torch.get_default_dtype()))
+        self.apply(self._init)
 
-    ax1.plot(z, loss, 'b-', label='Loss')
-    ax1.set_xlabel('Iterations')
-    ax1.set_ylabel('Loss', color='b')
-    ax1.set_yscale('log', base=10) 
-    ax1.tick_params(axis='y', labelcolor='b')
+    @staticmethod
+    def _init(m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_normal_(m.weight, gain=nn.init.calculate_gain('tanh'))
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
 
-    ax2 = ax1.twinx()  # 创建共享 x 轴的第二个 y 轴
-    ax2.plot(z, rank_interp, 'r--', label='Rank')
-    ax2.set_ylabel('Rank', color='r')
-    ax2.tick_params(axis='y', labelcolor='r')
+    def forward(self, x):
+        # 统一映射到 [-1,1]
+        lb = self.lb.to(x.device, x.dtype); ub = self.ub.to(x.device, x.dtype)
+        x = 2.0*(x - lb)/(ub - lb) - 1.0
+        for layer in self.layers:
+            x = layer(x)
+        return x
 
-    fig.tight_layout()
-    plt.title("Loss vs. Rank")
-    plt.savefig(f"loss_vs_rank_func2_{name}.png")  # 保存图像
-    plt.show()
-# def _init_data_dim1(func: str, interval: str, num_samples: int,device):
-#     """
-#     初始化数据 
-#     """
-#     interval = eval(interval)  # 例如 "[-1,1]" -> [-1, 1]
-#     # x = (interval[1] - interval[0]) * torch.rand(num_samples, 1) + interval[0]
-#     x=torch.linspace(interval[0], interval[1], num_samples).view(-1, 1)
-#     # 定义函数解析器
-    
-#     f=piecewise_hard
-#     y = f(x)
-#     noise_level = 0.05  # 控制噪声幅度，可调
-#     # y = y + noise_level * torch.randn_like(y)
-    
-#     x = x.to(device)
-#     y = y.to(device)
-#     return x, y
+model = MLP(layers).to(device)
 
-def _init_data_dim1(func: str, interval: str, num_samples: int,device):
-    """
-    初始化数据 
-    """
-    interval = eval(interval)  # 例如 "[-1,1]" -> [-1, 1]
-    # x = (interval[1] - interval[0]) * torch.rand(num_samples, 1) + interval[0]
-    x=torch.linspace(interval[0], interval[1], num_samples).view(-1, 1)
-    # 定义函数解析器
-    def parse_function(expr: str):
-        expr = expr.replace("cos30x^2", "np.cos(30*x_np*x_np)")
-        expr = expr.replace("sin100x", "np.sin(100*x_np)")
-        expr = expr.replace("cos5x", "np.cos(5*x_np)")
-        def f(x_tensor):
-            x_np = x_tensor.numpy()
-            y_np = eval(expr)
-            return torch.from_numpy(y_np)
-        return f
+# ====== PDE residual ======
+def pde_residual(model, x_t, nu):
+    x_t.requires_grad_(True)
+    u = model(x_t)                      # (N,1)
+    g = grad(u, x_t, torch.ones_like(u), create_graph=True, retain_graph=True)[0]  # (N,2)
+    u_x = g[:, 0:1]
+    u_t = g[:, 1:2]
+    u_xx = grad(u_x, x_t, torch.ones_like(u_x), create_graph=True, retain_graph=True)[0][:, 0:1]
+    return u_t + u*u_x - nu*u_xx
 
-    f = parse_function(func)
-    y = f(x)
-    x = x.to(device)
-    y = y.to(device)
-    return x, y
-@log_with_time
-def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
-    aux_loss=0
-    total_loss_list=[]
-    total_rank_list=[]
-    total_useless_rank_list=[]
-    scheduler = optimizer.lr_scheduler.StepLR(optim, step_size=1000, gamma=0.85)
-    for step in range(steps):
-        # 确保在训练模式
-        if step >=steps:
-            model.eval()
-        else:
-            model.train()
-        
-        if moe_training:
-            y_hat, aux_loss = model(x)
-            if step % 1000 == 0 :
-                # model.adlosscoff(args.decrease_rate)
-                eval_model(x, y, model, loss_fn,moe_training)
-        else:
-            y_hat=model(x)
-            if step % 1000 == 0 :
-                eval_model(x, y, model, loss_fn,moe_training)
-        # calculate prediction loss
-        loss = loss_fn(y_hat, y)
-        # combine losses
-        if moe_training:
-            total_loss = loss + aux_loss
-        else:
-            total_loss = loss
-        total_loss_list.append(total_loss.item())
-        optim.zero_grad()
-        total_loss.backward()
-        optim.step()
-           
-        scheduler.step()
-        
-        
-        if step % 100 == 0 or step == steps - 1:
-            if moe_training:
-                rank_expert=epi_rank_expert(model,args.interval,args.integral_sample,args.index)
-                rank_expert_list=rank_expert.rank_mlp()
-                expert_total=rank_expert.rank_mlp(True)
-                useless_rank=sum(rank_expert_list)-sum(expert_total)
-                # useless_rank=useless_rank/sum(expert_total)
-                total_useless_rank_list.append(useless_rank)
-                rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample)
-                rank_list=rank_mlp.rank_mlp()
-                total_rank_list.append(rank_list[args.index])
-                print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -aux_loss: {aux_loss.item():.8f} -rank: {rank_list} --expert: {rank_expert_list} --expert total: {expert_total} --useless rank: {useless_rank}")
-            else:
-                rank_mlp=epi_rank_mlp(model,args.interval,args.integral_sample,False,1)
-                rank=rank_mlp.rank_mlp()
-                total_rank_list.append(rank[args.plt_r])
-                print(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -rank: {rank}")
-    return model,total_loss_list,total_rank_list, total_useless_rank_list
-            
-def eval_model(x, y, model, loss_fn,moe_training=True,args=None):
-    model.eval()
-    # model returns the prediction and the loss that encourages all experts to have equal importance and load
-    if moe_training:
-        y_hat, aux_loss = model(x)
-    else:
-        y_hat=model(x)
-    loss = loss_fn(y_hat, y)
-    if moe_training:
-        total_loss = loss + aux_loss
-        print("MoE_Model Evaluation Results - loss: {:.8f}, aux_loss: {:.8f}".format(loss.item(), aux_loss.item()))
-    else:
-        loss=loss
-        print("MLP_Model Evaluation Results - loss: {:.8f}".format(loss.item()))
-    
-    fig, ax1 = plt.subplots(figsize=(17, 9))
-    
-    ax1.plot(x.cpu().numpy(), y_hat.detach().cpu().numpy(), label='Prediction')
-    ax1.plot(x.cpu().numpy(), y.cpu().numpy(), label='Ground Truth')
-    fig.tight_layout()
-    plt.title("func_pred")
-    if moe_training:
-        plt.savefig(f"func2_pred_moe.png")  # 保存图像
-    else:
-        plt.savefig(f"func2_pred_mlp.png")
-    plt.show()
+# ====== losses ======
+mse = nn.MSELoss()
 
-def main():
-    args=parse_args()
-    #init data and model
-    data_x,data_y=_init_data_dim1(args.function,args.interval,args.num_samples,args.device)
-    print(f"data_x shape: {data_x.shape},data_y shape: {data_y.shape} ")
-    model_moe=MOE_Model(args.input_size, args.num_experts,args.hidden_size,args.depth, args.output_size,args.k,args.loss_coef).to(args.device)
-    loss_fn =get_loss_fn(args.lossfn)
-    optimizer = get_optimizer(args.optim,model_moe.parameters(), lr=args.lr)
-    model,total_loss_list_moe,rank_list_moe,useless_rank_list_experts=train_loop(data_x, data_y, model_moe,loss_fn, optimizer, args,args.opt_steps)
-    eval_model(data_x, data_y, model, loss_fn)
-    torch.set_printoptions(threshold=float('inf'))
-    # print("Gates:\n", model.model[0].gates_check)
-    model_mlp=MLP_Model(args.input_size, args.hidden_size,args.depth, args.output_size).to(args.device)
-    optimizer_mlp=get_optimizer(args.optim,model_mlp.parameters(), lr=args.lr)
-        
-    model_mlp,total_loss_list_mlp,rank_list_mlp,_=train_loop(data_x, data_y, model_mlp,loss_fn, optimizer_mlp, args,args.opt_steps*2,moe_training=False)
-    eval_model(data_x, data_y, model_mlp, loss_fn,moe_training=False)
-    
+def loss_fn():
+    # IC
+    u_ic_pred = model(X_ic)
+    loss_ic = mse(u_ic_pred, u_ic)
+    # BC
+    u_left_pred  = model(X_bc_left)
+    u_right_pred = model(X_bc_right)
+    loss_bc = mse(u_left_pred, u_bc_left) + mse(u_right_pred, u_bc_right)
+    # PDE
+    r = pde_residual(model, X_f, nu)
+    loss_pde = mse(r, torch.zeros_like(r))
+    # 总损失（简单相加，必要时可给 PDE 加权）
+    return loss_ic + loss_bc + loss_pde, (loss_ic.item(), loss_bc.item(), loss_pde.item())
 
+# ====== train (Adam 简版) ======
+opt = torch.optim.Adam(model.parameters(), lr=8e-4)
+for step in range(1, adam_steps+1):
+    opt.zero_grad()
+    loss, (lic, lbc, lpde) = loss_fn()
+    loss.backward()
+    opt.step()
+    if step % 500 == 0:
+        print(f"[{step:5d}] loss={loss.item():.4e}  ic={lic:.2e}  bc={lbc:.2e}  pde={lpde:.2e}")
 
-    plot_dual_axis(np.array(total_loss_list_moe),np.array(rank_list_moe),args.opt_steps,"moe")
-    plot_dual_axis(np.array(total_loss_list_mlp),np.array(rank_list_mlp),args.opt_steps*2,"mlp")
-    plot_dual_axis(np.array(total_loss_list_moe),np.array(useless_rank_list_experts),args.opt_steps,"useless_experts")
+# ====== eval on grid and plot ======
+with torch.no_grad():
+    Nx_plot, Nt_plot = 200, 200
+    xg = torch.linspace(-1.0, 1.0, Nx_plot, device=device)
+    tg = torch.linspace(0.0, 1.0, Nt_plot, device=device)
+    Xg, Tg = torch.meshgrid(xg, tg, indexing='ij')
+    Xtest = torch.stack([Xg.reshape(-1), Tg.reshape(-1)], dim=1)
+    upred = model(Xtest).reshape(Nx_plot, Nt_plot).cpu().numpy()
+    Xnp, Tnp = Xg.cpu().numpy(), Tg.cpu().numpy()
 
-torch.manual_seed(42)
-main()      
-    
+plt.figure(figsize=(10,5))
+im = plt.contourf(Tnp, Xnp, upred, levels=100, cmap='coolwarm', vmin=-1, vmax=1)
+plt.xlabel('t'); plt.ylabel('x')
+plt.title('PINN Prediction for Burgers (u(x,t))')
+plt.colorbar(im)
+plt.tight_layout()
+plt.savefig('burgers.png')
+plt.show()
+
+# ====== compare with ground truth (.mat) ======
+import scipy.io
+from scipy.interpolate import griddata
+
+mat_path = "/home/zhy/Zhou/mixture_of_experts/data/burgers_shock.mat"
+data = scipy.io.loadmat(mat_path)
+
+# 数据集中：x,t 为列向量；usol 维度通常为 (Nx, Nt)，TF 版本里用了转置
+t_mat = data["t"].flatten()[:, None]   # [Nt,1]
+x_mat = data["x"].flatten()[:, None]   # [Nx,1]
+U_exact = np.real(data["usol"]).T      # 变成 [Nt,Nx] -> 转置后配合下面的使用
+
+# 用「数据集同样的网格」评估模型，避免插值误差
+X_mat, T_mat = np.meshgrid(x_mat, t_mat)                 # X:[Nt,Nx], T:[Nt,Nx]
+X_star = np.hstack((X_mat.reshape(-1,1), T_mat.reshape(-1,1)))  # [Nt*Nx,2]
+
+with torch.no_grad():
+    X_star_t = torch.tensor(X_star, dtype=torch.float64, device=device)
+    U_pred_vec = model(X_star_t).reshape(-1, 1).detach().cpu().numpy()
+    U_pred = U_pred_vec.reshape(len(t_mat), len(x_mat))  # [Nt,Nx]
+
+# 误差（绝对+相对 L2）
+abs_err = np.abs(U_pred - U_exact)                       # [Nt,Nx]
+rel_l2 = np.linalg.norm(U_pred - U_exact) / np.linalg.norm(U_exact)
+print(f"Relative L2 error vs GT: {rel_l2:.6e}")
+
+# ====== 作图：预测 vs 真解 & 误差热图 ======
+fig, axs = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
+
+# 左：真解
+im0 = axs[0].contourf(t_mat.squeeze(), x_mat.squeeze(), U_exact.T, levels=100, cmap='coolwarm', vmin=-1, vmax=1)
+axs[0].set_title("Ground Truth $u(x,t)$")
+axs[0].set_xlabel("t"); axs[0].set_ylabel("x")
+plt.colorbar(im0, ax=axs[0])
+
+# 中：预测
+im1 = axs[1].contourf(t_mat.squeeze(), x_mat.squeeze(), U_pred.T, levels=100, cmap='coolwarm', vmin=-1, vmax=1)
+axs[1].set_title("PINN Prediction $\\hat{u}(x,t)$")
+axs[1].set_xlabel("t"); axs[1].set_ylabel("x")
+plt.colorbar(im1, ax=axs[1])
+
+# 右：误差
+im2 = axs[2].contourf(t_mat.squeeze(), x_mat.squeeze(), abs_err.T, levels=100, cmap='viridis')
+axs[2].set_title(f"Abs Error $|\\hat{{u}}-u|$  (rel L2={rel_l2:.2e})")
+axs[2].set_xlabel("t"); axs[2].set_ylabel("x")
+plt.colorbar(im2, ax=axs[2])
+
+plt.savefig("burgers_pred_vs_gt_and_error.png", dpi=300)
+plt.show()
+
+# ====== 切片对比：t=0.25, 0.50, 0.75 ======
+def nearest_idx(arr, v):
+    return int(np.argmin(np.abs(arr.squeeze() - v)))
+
+t_slices = [0.25, 0.50, 0.75]
+fig2, axes = plt.subplots(1, 3, figsize=(18, 4), constrained_layout=True)
+for j, tt in enumerate(t_slices):
+    k = nearest_idx(t_mat, tt)
+    axes[j].plot(x_mat, U_exact[k, :], 'b-',  lw=2, label='Exact')
+    axes[j].plot(x_mat, U_pred[k, :],  'r--', lw=2, label='Pred')
+    axes[j].set_title(f"t = {t_mat[k,0]:.2f}")
+    axes[j].set_xlabel('x'); axes[j].set_ylabel('u')
+    axes[j].set_xlim([x_mat.min(), x_mat.max()])
+    axes[j].set_ylim([-1.1, 1.1])
+    if j == 1:
+        axes[j].legend()
+
+plt.savefig("burgers_slices.png", dpi=300)
+plt.show()
