@@ -46,36 +46,6 @@ import torch.nn.init as init
 
 
 class SparseDispatcher(object):
-    """Helper for implementing a mixture of experts.
-    The purpose of this class is to create input minibatches for the
-    experts and to combine the results of the experts to form a unified
-    output tensor.
-    There are two functions:
-    dispatch - take an input Tensor and create input Tensors for each expert.
-    combine - take output Tensors from each expert and form a combined output
-      Tensor.  Outputs from different experts for the same batch element are
-      summed together, weighted by the provided "gates".
-    The class is initialized with a "gates" Tensor, which specifies which
-    batch elements go to which experts, and the weights to use when combining
-    the outputs.  Batch element b is sent to expert e iff gates[b, e] != 0.
-    The inputs and outputs are all two-dimensional [batch, depth].
-    Caller is responsible for collapsing additional dimensions prior to
-    calling this class and reshaping the output to the original shape.
-    See common_layers.reshape_like().
-    Example use:
-    gates: a float32 `Tensor` with shape `[batch_size, num_experts]`
-    inputs: a float32 `Tensor` with shape `[batch_size, input_size]`
-    experts: a list of length `num_experts` containing sub-networks.
-    dispatcher = SparseDispatcher(num_experts, gates)
-    expert_inputs = dispatcher.dispatch(inputs)
-    expert_outputs = [experts[i](expert_inputs[i]) for i in range(num_experts)]
-    outputs = dispatcher.combine(expert_outputs)
-    The preceding code sets the output for a particular example b to:
-    output[b] = Sum_i(gates[b, i] * experts[i](inputs[b]))
-    This class takes advantage of sparsity in the gate matrix by including in the
-    `Tensor`s for expert i only the batch elements for which `gates[b, i] > 0`.
-    """
-
     def __init__(self, num_experts, gates):
         """Create a SparseDispatcher."""
 
@@ -94,52 +64,20 @@ class SparseDispatcher(object):
         self._nonzero_gates = torch.gather(gates_exp, 1, self._expert_index)
 
     def dispatch(self, inp):
-        """Create one input Tensor for each expert.
-        The `Tensor` for a expert `i` contains the slices of `inp` corresponding
-        to the batch elements `b` where `gates[b, i] > 0`.
-        Args:
-          inp: a `Tensor` of shape "[batch_size, <extra_input_dims>]`
-        Returns:
-          a list of `num_experts` `Tensor`s with shapes
-            `[expert_batch_size_i, <extra_input_dims>]`.
-        """
-
-        # assigns samples to experts whose gate is nonzero
-
-        # expand according to batch index so we can just split by _part_sizes
         inp_exp = inp[self._batch_index] 
         return torch.split(inp_exp, self._part_sizes, dim=0)
 
     def combine(self, expert_out, multiply_by_gates=True):
-        """Sum together the expert output, weighted by the gates.
-        The slice corresponding to a particular batch element `b` is computed
-        as the sum over all experts `i` of the expert output, weighted by the
-        corresponding gate values.  If `multiply_by_gates` is set to False, the
-        gate values are ignored.
-        Args:
-          expert_out: a list of `num_experts` `Tensor`s, each with shape
-            `[expert_batch_size_i, <extra_output_dims>]`.
-          multiply_by_gates: a boolean
-        Returns:
-          a `Tensor` with shape `[batch_size, <extra_output_dims>]`.
-        """
-        # apply exp to expert outputs, so we are not longer in log space
         stitched = torch.cat(expert_out, 0)
 
         if multiply_by_gates:
             stitched = stitched.mul(self._nonzero_gates)
         zeros = torch.zeros(self._gates.size(0), expert_out[-1].size(1), requires_grad=True, device=stitched.device)
         # combine samples that have been processed by the same k experts
-        combined = zeros.index_add(0, self._batch_index, stitched.float())
+        combined = zeros.index_add(0, self._batch_index, stitched.double())
         return combined
 
     def expert_to_gates(self):
-        """Gate values corresponding to the examples in the per-expert `Tensor`s.
-        Returns:
-          a list of `num_experts` one-dimensional `Tensor`s with type `tf.float32`
-              and shapes `[expert_batch_size_i]`
-        """
-        # split nonzero gates for each expert
         return torch.split(self._nonzero_gates, self._part_sizes, dim=0)
 class Expert(nn.Module):
     """
@@ -157,7 +95,7 @@ class Expert(nn.Module):
         layer_list.append(nn.Linear(input_size,hidden_size))  #[I,H]
         for i in range(self.depth-1):
             layer_list.append(nn.Linear(hidden_size,hidden_size))  #[H,H]
-        layer_list.append(nn.Linear(hidden_size,hidden_size))  #[H,I] zhou's model
+        layer_list.append(nn.Linear(hidden_size,output_size))  #[H,I] zhou's model
         self.net = nn.ModuleList(layer_list)
         self._init_weights()
         
@@ -192,12 +130,6 @@ class Gating(nn.Module):
             nn.Linear(input_size,num_experts)
             #[I,H]
         )
-        # self.net=nn.Sequential(
-        #     nn.Linear(input_size,num_experts),
-        #     nn.ReLU(),
-        #     nn.Linear(num_experts,num_experts)
-        #     #[I,H]
-        # )
         self.noisy=nn.Linear(input_size,num_experts)
         self.softplus = nn.Softplus()
         self.noise_epsilon=noise_epsilon
@@ -215,6 +147,7 @@ class Gating(nn.Module):
             layer.weight.data = gamma * weight
             # 偏置均匀分布在 [0, R]
             layer.bias.data.uniform_(0.0, R)
+            
 
     def forward(self,x,train):
         """ 
@@ -241,7 +174,7 @@ class MoE(nn.Module):
     - num_experts (int): The number of experts.
     - hidden_size (int): The size of the hidden layer.
     """
-    def __init__(self,input_size,num_experts,hidden_size,depth,output_size,k=2,loss_coef=1e-2,activation=nn.Tanh(),epsilon=1e-8):
+    def __init__(self,input_size,num_experts,hidden_size,depth,output_size,k=2,loss_coef=1e-2,activation=nn.Tanh(),epsilon=1e-1):
         super(MoE, self).__init__()
         self.k=k
         self.depth = depth
@@ -353,7 +286,7 @@ class MoE(nn.Module):
     def forward(self,x,train):
         gates,_,_=self.gating_network(x,train)
         
-        gates= gates/(self.epsilon+1e-4*torch.abs(gates))
+        gates= gates/(self.epsilon+1e-1*torch.abs(gates)) #
         gates= self.softmax(gates)
         
         # gates,load= self.topkGating(x,train) #[E,] ,zhou'model
@@ -389,6 +322,8 @@ class MLP(nn.Module):
     def forward(self, x):
         x = self.model(x)
         return x
+
+
 
 # example model class MoE_Model
     
@@ -454,7 +389,7 @@ class MOE_modify_beta(nn.Module):
         self.output_size = output_size
         self.k=k
         self.loss_coef=loss_coef
-        self.moe=MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
+        self.moe=MoE(input_size, num_experts, hidden_size,depth,hidden_size,self.k,self.loss_coef,activation)
         self.model=self.moe
         lb=[-1,0]
         ub=[1,1]
@@ -463,7 +398,6 @@ class MOE_modify_beta(nn.Module):
         # === 2️⃣ Beta 网络（可调 depth） ===
         layers = []
         in_dim = input_size
-        self.moe2=MoE(hidden_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
         # 如果 depth = 1，则只有一层线性映射
         for i in range(1):
             layers.append(nn.Linear(in_dim, hidden_size))
@@ -501,9 +435,74 @@ class MOE_modify_beta(nn.Module):
     def forward(self, x):
         x = 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
         output,loss1=self.model(x, self.training)
-        output,loss2=self.moe2(output, self.training)
         # output=(output).sum(dim=1,keepdim=True)
         beta=self.Beta(x)
         output=(output*beta).sum(dim=1,keepdim=True)
-        loss=loss1+loss2
+        loss=loss1
         return output,loss
+    
+    
+
+    
+class MOE_2expert(nn.Module):   
+    def __init__(self, input_size, num_experts, hidden_size, depth, output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
+        super(MOE_2expert, self).__init__()
+        self.input_size = input_size
+        self.num_experts = num_experts
+        self.hidden_size = hidden_size
+        self.depth = depth
+        self.output_size = output_size
+        self.k=k
+        self.loss_coef=loss_coef
+        lb=[-1,0]
+        ub=[1,1]
+        self.register_buffer("lb", torch.as_tensor(lb))
+        self.register_buffer("ub", torch.as_tensor(ub))
+        # === 2️⃣ Beta 网络（可调 depth） ===
+        moes = []
+        in_dim = input_size
+        # 如果 depth = 1，则只有一层线性映射
+        for i in range(depth):
+            moes.append(MoE(in_dim, num_experts, hidden_size,1,hidden_size,self.k,self.loss_coef,activation))
+            in_dim = hidden_size
+
+        moes.append(nn.Linear(hidden_size, output_size,bias=False))
+        self.network = nn.ModuleList(moes)
+        
+        self._init_weights()
+        self._report_trainable()
+        
+        
+    def _report_trainable(self):
+            total = 0
+            print("=== Trainable parameters ===")
+            for name, p in self.named_parameters():
+                if p.requires_grad:
+                    n = p.numel()
+                    total += n
+            print(f"Total trainable params: {total}\n")
+        
+    def _init_weights(self):
+        import torch.nn.init as init
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                # 如果是 UDI 初始化过的层，就跳过！
+                if getattr(m, "udi_initialized", False):
+                    continue
+                init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    init.zeros_(m.bias)
+    def forward(self, x):
+        x = 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
+        loss_all=0
+        for i,moe in enumerate(self.network):
+            if isinstance(moe,nn.Linear):
+                x=moe(x)
+            else:
+                x,loss=moe(x, self.training)
+
+            loss_all=loss_all+loss
+
+        return x,loss
+    
+    
