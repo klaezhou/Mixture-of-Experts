@@ -43,6 +43,7 @@ import torch.nn.functional as F
 from functorch import make_functional, vmap
 import logging
 import torch.nn.init as init
+import time
 
 torch.set_default_dtype(torch.float64)
 class SparseDispatcher(object):
@@ -186,7 +187,7 @@ class Gating(nn.Module):
     - num_experts (int): The number of experts.
     - noise_epsilon (float): The noise epsilon value. default is 1e-4.
     """
-    def __init__(self,input_size,num_experts,noise_epsilon=1e-4):
+    def __init__(self,input_size,num_experts,noise_epsilon=1e-4,gamma=2,R=2):
         super(Gating, self).__init__()
         self.net=nn.Sequential(
             nn.Linear(input_size,num_experts) #[I,H]
@@ -194,18 +195,32 @@ class Gating(nn.Module):
         self.noisy=nn.Linear(input_size,num_experts)
         self.softplus = nn.Softplus()
         self.noise_epsilon=noise_epsilon
+
+        self.udi_init(self.net[0], gamma, R)
+        self.net[0].udi_initialized = True
+    def udi_init(self, layer, gamma, R):
+            # 取出层参数
+            weight = torch.randn_like(layer.weight)  # 随机方向
+            # 每一行归一化到单位球面（a_j）
+            weight = F.normalize(weight, p=2, dim=1)
+            # 可选缩放 γ
+            layer.weight.data = gamma * weight
+            # 偏置均匀分布在 [0, R]
+            layer.bias.data.uniform_(0.0, R)
+
     def forward(self,x,train):
         """ 
         - train (bool): Whether to train the model. Only add the noise when training.
         """
         gates=self.net(x)
         noisy_stddev=None 
-        if train:
-            noisy_stddev=self.softplus(self.noisy(x)) + self.noise_epsilon 
-            std = torch.randn_like(gates)  
-            output= gates + noisy_stddev * std
-        else:
-            output = gates
+        # if train:
+        #     noisy_stddev=self.softplus(self.noisy(x)) + self.noise_epsilon 
+        #     std = torch.randn_like(gates)  
+        #     output= gates + noisy_stddev * std
+        # else:
+        #     output = gates
+        output = gates
         
         return output, gates,noisy_stddev#[E,] noisy - clean-nosiy_stddev
         
@@ -218,7 +233,7 @@ class MoE(nn.Module):
     - num_experts (int): The number of experts.
     - hidden_size (int): The size of the hidden layer.
     """
-    def __init__(self,input_size,num_experts,hidden_size,depth,output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
+    def __init__(self,input_size,num_experts,hidden_size,depth,output_size,k=2,loss_coef=1e-2,activation=nn.Tanh(),epsilon=1e-1):
         super(MoE, self).__init__()
         torch.set_default_dtype(torch.float64)
         self.k=k
@@ -228,6 +243,7 @@ class MoE(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.output_size = output_size
+        self.epsilon=epsilon
         self.experts = nn.ModuleList(
             [Expert(self.input_size,self.hidden_size,self.output_size,self.depth,activation) for _ in range(num_experts)]
             )
@@ -297,25 +313,6 @@ class MoE(nn.Module):
             return torch.tensor([0], device=x.device, dtype=x.dtype)
         return x.var() / (x.mean()**2 + eps)
     
-    # def topkGating(self,x,train):
-            
-    #         noisy,clean,noisy_stddev=self.gating_network(x,train)
-    #         Gating = self.softmax(noisy)
-    #         values, indices= torch.topk(Gating,k=self.k,dim=-1) 
-    #         top_logits,_=torch.topk(Gating,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
-    #         top_k_gates = values / (values.sum(1, keepdim=True) + 1e-6)  # normalization
-    #         zeros = torch.zeros_like(Gating, requires_grad=True)
-    #         gates = zeros.scatter(1, indices, top_k_gates)#Gating: [E,]
-    #         #balance loss
-    #         if  train:
-    #             load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0)
-    #         else:
-    #             load = self._gates_to_load(gates)
-    #             load=load.float()
-                
-            
-    #         return gates,load
-    
     def topkGating(self,x,train):
             ## topk--> softmax
             noisy,clean,noisy_stddev=self.gating_network(x,train)
@@ -340,10 +337,33 @@ class MoE(nn.Module):
                 
             
             return gates,load
+    
+    def e_softmax_Gating(self,x,train):
+            ## topk--> softmax
+            noisy,clean,noisy_stddev=self.gating_network(x,train)
+            top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
+            gates= noisy/(self.epsilon+1e-1*torch.abs(noisy))
+            gates= self.softmax(gates)
+            ## softmax--> topk-->normalize
+            # Gating = self.softmax(noisy)
+            # values, indices= torch.topk(Gating,k=self.k,dim=-1) 
+            # top_logits,_=torch.topk(Gating,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
+            # top_k_gates = values / (values.sum(1, keepdim=True) + 1e-8)  # normalization
+            # zeros = torch.zeros_like(Gating, requires_grad=True)
+            # gates = zeros.scatter(1, indices, top_k_gates)#Gating: [E,]
+            #balance loss
+            # if  train:
+            #     load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0) #[num_experts,]
+            # else:
+            load = self._gates_to_load(gates)
+            load=load.float()
+                
+            return gates,load
         
         
     def forward(self,x,train):
-        gates,load= self.topkGating(x,train) #[E,]
+        gates,load= self.e_softmax_Gating(x,train) #[E,]
+        # gates,load= self.topkGating(x,train) #[E,]
         self.gates_check=gates
         # if not train:
         #     # not train-> print gates
@@ -371,13 +391,6 @@ class MLP(nn.Module):
             nn.Linear(self.hidden_size, hidden_size),
             activation
         )
-        self._init_weights()
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
-                if m.bias is not None:
-                    init.zeros_(m.bias)
 
     def forward(self, x):
         x = self.model(x)
@@ -402,7 +415,22 @@ class MOE_Model(nn.Module):
             # + [MLP(hidden_size,activation) for _ in range(depth - 2)] +
             # [nn.Linear(hidden_size, output_size)]
         )
+        lb=[-1,0]
+        ub=[1,1]
+        self.register_buffer("lb", torch.as_tensor(lb))
+        self.register_buffer("ub", torch.as_tensor(ub))
         self._init_weights()
+        self._report_trainable()
+        
+        
+    def _report_trainable(self):
+            total = 0
+            print("=== Trainable parameters ===")
+            for name, p in self.named_parameters():
+                if p.requires_grad:
+                    n = p.numel()
+                    total += n
+            print(f"Total trainable params: {total}\n")
     def _init_weights(self):
             for m in self.modules():
                 if isinstance(m, nn.Linear):
@@ -410,6 +438,7 @@ class MOE_Model(nn.Module):
                     if m.bias is not None:
                         init.zeros_(m.bias)
     def forward(self, x):
+        x = 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
         loss=None
         for i, layer in enumerate(self.model):
             if i == 0:  # MoE 层需要 train 参数
@@ -421,31 +450,49 @@ class MOE_Model(nn.Module):
 
 class MLP_Model(nn.Module):
     def __init__(self, input_size, hidden_size, depth, output_size, activation=nn.Tanh()):
-        super(MLP_Model, self).__init__()
-        self.input_size = input_size
+        super().__init__()
+        self.input_size  = input_size
         self.hidden_size = hidden_size
-        self.depth = depth
+        self.depth       = depth
         self.output_size = output_size
-        layer1 = nn.Sequential(*(nn.Linear(input_size, hidden_size), activation))
-        # layer2= nn.Sequential(*(nn.Linear(hidden_size, hidden_size), nn.Tanh()))   #nn.Softmax(1)
-        # 注意不要让激活函数单独占一个list位置，会影响rank的输出
-        # self.model = nn.ModuleList( [layer1]+ [layer2]+ # layer1,layer2 相对于moe少了gating 
-        #     [MLP(hidden_size) for _ in range(depth-1)] +
-        #     [nn.Linear(hidden_size, output_size)]
-        # )
-        self.model = nn.ModuleList([layer1] + # layer1,layer2 相对于moe少了gating 
-            [MLP(hidden_size, activation) for _ in range(depth-1)] +
-            [nn.Linear(hidden_size, output_size, bias=False)]
-        )
-        self._init_weights()
-    def _init_weights(self):
-            for m in self.modules():
-                if isinstance(m, nn.Linear):
-                    init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
-                    if m.bias is not None:
-                        init.zeros_(m.bias)
-                        
-    def forward(self, x):
+
+        assert input_size == 2, "当前归一化假设输入为 [x,t] 两维。"
+
+        # 边界可改成参数传入，这里先保留你的写法
+        self.register_buffer("lb", torch.tensor([-1.0, 0.0]))
+        self.register_buffer("ub", torch.tensor([ 1.0, 1.0]))
+
+        # 建层（建议每层各自一个激活实例）
+        def make_act():
+            return activation.__class__() if isinstance(activation, nn.Module) else activation
+
+        layer1 = nn.Sequential(nn.Linear(input_size, hidden_size), make_act())
+        blocks = [layer1] + [MLP(hidden_size, make_act()) for _ in range(depth - 1)] + [nn.Linear(hidden_size, output_size)]
+        self.model = nn.ModuleList(blocks)
+        self.apply(self._init)
+        self._report_trainable()
+        
+
+    def _report_trainable(self):
+        total = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"=== Trainable parameters ===\nTotal trainable params: {total}\n")
+
+    @staticmethod
+    def _init(m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_normal_(m.weight, gain=nn.init.calculate_gain('tanh'))
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x, normalize=True):
+        # 保证 dtype/device 一致，防止外部是 float64/GPU 而 buffer 不一致
+        if normalize:
+            lb = self.lb.to(dtype=x.dtype, device=x.device)
+            ub = self.ub.to(dtype=x.dtype, device=x.device)
+            y = 2.0 * (x - lb) / (ub - lb) - 1.0
+        else:
+            y = x.to(dtype=self.lb.dtype, device=self.lb.device)
+
         for i, layer in enumerate(self.model):
-            x = layer(x)
-        return x
+            y = layer(y)
+        return y
