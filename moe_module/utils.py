@@ -16,31 +16,31 @@ from data import *
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Mixture-of-Experts model.")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
-    parser.add_argument("--lr", type=float, default=8e-4, help="Learning rate.")
+    parser.add_argument("--lr", type=float, default=8e-3, help="Learning rate.")
     parser.add_argument("--device", type=str, default="cuda:5" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
     parser.add_argument("--input_size", type=int, default=2,help="Input size (funcion approximation x) ")
     parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
-    parser.add_argument("--num_experts", type=int, default=2,help="Number of experts")
-    parser.add_argument("--hidden_size", type=int, default=20,help="Hidden size of each expert")
-    parser.add_argument("--depth", type=int, default=3,help="Depth of the MOE model")
+    parser.add_argument("--num_experts", type=int, default=4,help="Number of experts")
+    parser.add_argument("--hidden_size", type=int, default=10,help="Hidden size of each expert")
+    parser.add_argument("--depth", type=int, default=5,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adam")
-    parser.add_argument("--opt_steps", type=int, default=40000)
+    parser.add_argument("--opt_steps", type=int, default=30000)
     parser.add_argument("--activation", type=str, default="tanh", help="activation_function")
     parser.add_argument("--init_func", type=str, default="-sin(pi*x)", help="function")
     parser.add_argument("--x_interval", type=str, default="[-1,1]")
     parser.add_argument("--t_interval", type=str, default="[0,1]")
-    parser.add_argument("--x_num_samples", type=int, default=100)
+    parser.add_argument("--x_num_samples", type=int, default=200)
     parser.add_argument("--t_num_samples", type=int, default=100)
-    parser.add_argument("--k", type=int, default=1,help="top-k selection")
-    parser.add_argument("--loss_coef", type=float, default=0)
+    parser.add_argument("--k", type=int, default=2,help="top-k selection")
+    parser.add_argument("--loss_coef", type=float, default=1)
     parser.add_argument("--x_integral_sample", type=int, default=200, help="x_integral_sample")
     parser.add_argument("--t_integral_sample", type=int, default=100, help="t_integral_sample")
     parser.add_argument("--nu", type=float, default=0.01/np.pi,help="nu in equation u_t + u*u_x - nu*u_xx=0")
     parser.add_argument("--plt_r", type=int, default=1)
     parser.add_argument("--epsilon", type=float, default=1e-3,help="epsilon for rank")
-    parser.add_argument("--loss_coef_init", type=float, default=20)
-    parser.add_argument("--loss_coef_bnd", type=float, default=20)
+    parser.add_argument("--loss_coef_init", type=float, default=1)
+    parser.add_argument("--loss_coef_bnd", type=float, default=1)
     parser.add_argument("--vtn",type=int,default=100)
     parser.add_argument("--vxn",type=int,default=100)
     parser.add_argument("--gt",type=torch.Tensor,default=None,help="ground truth")
@@ -291,11 +291,11 @@ def generate_data(vxn, vtn, nu, writer):
     # === 3️⃣ 绘制真解 ===
     fig, ax = plt.subplots(figsize=(17, 9))
     im = ax.contourf(
-        T, X, u_sel, levels=100, cmap='coolwarm', vmin=-1, vmax=1
+        X, T, u_sel.T, levels=100, cmap='coolwarm', vmin=-1, vmax=1
     )
     ax.set_title(f"Ground Truth Burgers Solution (ν={nu:.5f})")
-    ax.set_xlabel("t")
-    ax.set_ylabel("x")
+    ax.set_xlabel("x")
+    ax.set_ylabel("t")
     fig.colorbar(im, ax=ax)
     fig.tight_layout()
 
@@ -323,9 +323,16 @@ def gates_image(model,X_test,writer):
     """for moe mode MOE_modify_beta"""
     moe=model.moe
     with torch.no_grad():
-        gate_output,_,_=moe.gating_network(X_test,train=False)
-        gate_output= gate_output/(moe.epsilon+1e-1*torch.abs(gate_output)) #+1e-4*torch.abs(gates)
-        gate_output= moe.softmax(gate_output)
+        if model.moe.smooth:
+            gate_output,_,_=moe.gating_network(X_test,train=False)
+            gate_output =moe.soft_topk(gate_output, moe.k)
+            # gate_output= gate_output/(moe.epsilon) #+1e-4*torch.abs(gates)
+            # gate_output= moe.softmax(gate_output)
+            # gate_output= gate_output / (gate_output.sum(1, keepdim=True) + 1e-8) 
+        else:
+            gate_output,_= moe.topkGating(X_test,train=False)
+
+        
 
     x = X_test[:,0].detach().cpu().numpy()
     t = X_test[:,1].detach().cpu().numpy()
@@ -358,8 +365,45 @@ def gates_image(model,X_test,writer):
         
     return 
 
+def beta_image(model,X_test,writer):
+    """for moe mode MOE_modify_beta"""
+    beta=model.Beta
+    with torch.no_grad():
+        gate_output=beta(X_test)
 
-    
+
+    x = X_test[:,0].detach().cpu().numpy()
+    t = X_test[:,1].detach().cpu().numpy()
+    P = gate_output.detach().cpu().numpy()           # [N, E]
+    E = P.shape[1]
+
+    # 还原网格（确保 N == nx*nt）
+    ux = np.unique(x); ut = np.unique(t)
+    nx, nt = len(ux), len(ut)
+    assert nx*nt == len(x), "X_test 不是规则网格（用下面的散点版画法）"
+
+    # 变形为 (nx, nt, E)
+    P_grid = P.reshape(nx, nt, E)
+    Xg, Tg = np.meshgrid(ux, ut, indexing='ij')
+
+    # 2.1 每个 expert 的热力图
+    cols = min(E, 4)
+    rows = int(np.ceil(E/cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(4*cols, 3.5*rows), squeeze=False)
+    for i in range(E):
+        ax = axes[i//cols][i%cols]
+        im = ax.contourf(Xg, Tg, P_grid[:,:,i], levels=100, cmap='viridis', vmin=-1, vmax=1)
+        ax.set_title(f"Expert {i} prob")
+        ax.set_xlabel("x"); ax.set_ylabel("t")
+        fig.colorbar(im, ax=ax)
+    plt.savefig("beta distribution.png")
+    writer.add_figure("beta_distribution", fig)
+
+    plt.tight_layout(); plt.show()
+        
+    return 
+
+
     
 
     

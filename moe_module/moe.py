@@ -124,10 +124,12 @@ class Gating(nn.Module):
     - num_experts (int): The number of experts.
     - noise_epsilon (float): The noise epsilon value. default is 1e-4.
     """
-    def __init__(self,input_size,num_experts,noise_epsilon=1e-6,gamma=2,R=2):
+    def __init__(self,input_size,num_experts,noise_epsilon=1e-6,gamma=1,R=1):
         super(Gating, self).__init__()
         self.net=nn.Sequential(
-            nn.Linear(input_size,num_experts)
+            nn.Linear(input_size,num_experts),
+            nn.Tanh(),
+            nn.Linear(num_experts,num_experts),
             #[I,H]
         )
         self.noisy=nn.Linear(input_size,num_experts)
@@ -136,8 +138,8 @@ class Gating(nn.Module):
         
 
                 
-        self.udi_init(self.net[0], gamma, R)
-        self.net[0].udi_initialized = True
+        # self.udi_init(self.net[0], gamma, R)
+        # self.net[0].udi_initialized = True
     def udi_init(self, layer, gamma, R):
             # 取出层参数
             weight = torch.randn_like(layer.weight)  # 随机方向
@@ -178,6 +180,7 @@ class MoE(nn.Module):
         super(MoE, self).__init__()
         self.k=k
         self.depth = depth
+        self.smooth=True
         self.loss_coef = loss_coef
         self.num_experts = num_experts
         self.input_size = input_size
@@ -192,6 +195,9 @@ class MoE(nn.Module):
         self.gates_check=None
         self.softmax = nn.Softmax(dim=-1)
         self.gating_network = Gating(self.input_size,self.num_experts)
+    
+    def smoothing(self):
+        self.smooth = not self.smooth
         
     def _prob_in_top_k(self, clean_values, noisy_values, noise_stddev, noisy_top_values):
         """Helper function to NoisyTopKGating.
@@ -258,10 +264,11 @@ class MoE(nn.Module):
     def topkGating(self,x,train):
             ## topk--> softmax
             noisy,clean,noisy_stddev=self.gating_network(x,train)
-            values, indices= torch.topk(noisy,k=self.k,dim=-1) 
-            # top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,] zhou's model
             
+            values, indices= torch.topk(noisy,k=self.k,dim=-1) 
+            # top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,] zhou's mode
             values=self.softmax(values)
+            # values= values / (values.sum(1, keepdim=True) + 1e-8) 
             zeros= torch.zeros_like(noisy, requires_grad=True)
             gates=zeros.scatter(1, indices, values)
             ## softmax--> topk-->normalize
@@ -282,14 +289,30 @@ class MoE(nn.Module):
             
             return gates,load
         
+    def soft_topk(self,s: torch.Tensor,k: int,tau1: float = 5e-2,tau2: float = 5e-2):
         
+        diff = torch.unsqueeze(s,-1) - torch.unsqueeze(s,-2)
+        sigma = torch.sigmoid(-diff / tau1)
+        row_sum = sigma.sum(dim=-1) - 0.5
+        r_tilde = 1.0 + row_sum
+        eps=0.5    
+        a = torch.sigmoid((k+eps - r_tilde) / tau2)     
+
+        a=a*s
+        a=F.softmax(a,dim=-1)
+
+        return a
     def forward(self,x,train):
-        gates,_,_=self.gating_network(x,train)
-        
-        gates= gates/(self.epsilon+1e-1*torch.abs(gates)) #
-        gates= self.softmax(gates)
-        
-        # gates,load= self.topkGating(x,train) #[E,] ,zhou'model
+        smooth=self.smooth
+        if smooth:
+            
+            gates,_,_=self.gating_network(x,train)
+            gates= self.soft_topk(gates, self.k)
+            # gates= gates/(self.epsilon) # +1e-1*torch.abs(gates)
+            # gates= self.softmax(gates)
+            # gates= gates / (gates.sum(1, keepdim=True) + 1e-8) 
+        else:
+            gates,load= self.topkGating(x,train)
         
         self.gates_check=gates
         # if not train:
@@ -399,20 +422,24 @@ class MOE_modify_beta(nn.Module):
         layers = []
         in_dim = input_size
         # 如果 depth = 1，则只有一层线性映射
-        for i in range(1):
+        for i in range(2):
             layers.append(nn.Linear(in_dim, hidden_size))
-            layers.append(activation)
+            layers.append(nn.ReLU())
             in_dim = hidden_size
 
         layers.append(nn.Linear(hidden_size, hidden_size,bias=False))
         self.Beta = nn.Sequential(*layers)
-        # for p in self.Beta.parameters():
-        #     p.requires_grad_(False)
+        
+        # self.linear=nn.Linear(hidden_size, output_size)
+        
+
         
         self._init_weights()
         self._report_trainable()
         
-        
+    def frozen_beta(self):
+            for p in self.Beta.parameters():
+                p.requires_grad_(False)
     def _report_trainable(self):
             total = 0
             print("=== Trainable parameters ===")
@@ -435,9 +462,9 @@ class MOE_modify_beta(nn.Module):
     def forward(self, x):
         x = 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
         output,loss1=self.model(x, self.training)
-        # output=(output).sum(dim=1,keepdim=True)
         beta=self.Beta(x)
         output=(output*beta).sum(dim=1,keepdim=True)
+        # output=self.linear(output)
         loss=loss1
         return output,loss
     
@@ -459,15 +486,15 @@ class MOE_2expert(nn.Module):
         self.register_buffer("lb", torch.as_tensor(lb))
         self.register_buffer("ub", torch.as_tensor(ub))
         # === 2️⃣ Beta 网络（可调 depth） ===
-        moes = []
+        self.moes = []
         in_dim = input_size
         # 如果 depth = 1，则只有一层线性映射
         for i in range(depth):
-            moes.append(MoE(in_dim, num_experts, hidden_size,1,hidden_size,self.k,self.loss_coef,activation))
+            self.moes.append(MoE(in_dim, num_experts, hidden_size,1,hidden_size,self.k,self.loss_coef,activation))
             in_dim = hidden_size
 
-        moes.append(nn.Linear(hidden_size, output_size,bias=False))
-        self.network = nn.ModuleList(moes)
+        self.moes.append(nn.Linear(hidden_size, output_size,bias=False))
+        self.network = nn.ModuleList(self.moes)
         
         self._init_weights()
         self._report_trainable()

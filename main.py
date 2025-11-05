@@ -14,7 +14,7 @@ import numpy as np
 from functorch import make_functional, vmap
 from moe_module.moe import MOE_modify_beta,MLP_Model, MOE_2expert
 from moe_module.utils import parse_args, _init_data_dim1, get_optimizer, get_loss_fn, log_with_time,plot_dual_axis, plot_expert_useless_rank, get_activation\
-    ,generate_data,save_model,gates_image
+    ,generate_data,save_model,gates_image,beta_image
 from moe_module.epi_rank import epi_rank_mlp
 from moe_module.tools import *
 # download data
@@ -54,10 +54,16 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
             eval_model(step,X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training,args,writer)
             if moe_training:
                 gates_image(model,args.X_test,writer)
+                beta_image(model,args.X_test,writer)
+                if step >0: 
+                    model.moe.smoothing()
+                    
+                    # model.frozen_beta()
             #update points
-            # args.seed=args.seed+step
-            # torch.manual_seed(args.seed)
-            # X_init,X_bnd,X_f,X_total,u_init=_init_data_dim1(args.init_func,args.x_interval,args.t_interval,args.x_num_samples,args.t_num_samples,args.device,args)
+            args.seed=args.seed+step
+            torch.manual_seed(args.seed)
+            X_init,X_bnd,X_f,X_total,u_init=_init_data_dim1(args.init_func,args.x_interval,args.t_interval,args.x_num_samples,args.t_num_samples,args.device,args)
+        
         optim.zero_grad()
         # 确保在训练模式
         model.train()
@@ -82,7 +88,8 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
         total_loss_list.append(total_loss.item())
         total_loss.backward()
         optim.step()
-        scheduler.step()
+        if step  <100000 : 
+            scheduler.step()
     # optimize by lbfgs
     optimizer = optimi.LBFGS(
         model.parameters(),lr=0.5, max_iter=20,        # 每次step内部最多迭代次数 
