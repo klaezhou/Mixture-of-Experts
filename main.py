@@ -43,26 +43,35 @@ def pde_residual(model, x_t, nu, moe_training=True):
 
     r = u_t + u * u_x - nu * u_xx
     return r
+
 @log_with_time
 def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,steps=100,moe_training=True,writer=None):
     scheduler = StepLR(optim, step_size=100, gamma=args.lr_decay)
     activation=get_activation(args.activation)
     aux_loss,init_loss,bnd_loss,f_loss= 0,0,0,0
     total_loss_list,total_rank_list,total_useless_expert_rank=[],[],[]
-    for step in range(steps):
+    step_count=args.smooth_steps
+    for step in range(steps): 
+        if moe_training :
+            step_count -=1
+            if model.moe.smooth and step_count<=0:
+                model.moe.smoothing(step,args.smooth_lb)
+                step_count=args.smooth_steps
+            elif step_count<=0 :
+                model.moe.smoothing(step,args.smooth_lb)
+                step_count=args.smooth_steps
         if step % 500 == 0:
             eval_model(step,X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training,args,writer)
             if moe_training:
                 gates_image(model,args.X_test,writer)
-                beta_image(model,args.X_test,writer)
-                if step >0: 
-                    model.moe.smoothing()
+                # beta_image(model,args.X_test,writer)
+
                     
                     # model.frozen_beta()
             #update points
-            args.seed=args.seed+step
-            torch.manual_seed(args.seed)
-            X_init,X_bnd,X_f,X_total,u_init=_init_data_dim1(args.init_func,args.x_interval,args.t_interval,args.x_num_samples,args.t_num_samples,args.device,args)
+            # args.seed=args.seed+step
+            # torch.manual_seed(args.seed)
+            # X_init,X_bnd,X_f,X_total,u_init=_init_data_dim1(args.init_func,args.x_interval,args.t_interval,args.x_num_samples,args.t_num_samples,args.device,args)
         
         optim.zero_grad()
         # 确保在训练模式
@@ -164,7 +173,7 @@ def eval_model(step,X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_trai
     loss = args.loss_coef_init *init_loss + args.loss_coef_bnd * bnd_loss + f_loss
 
     if moe_training:
-        tqdm.write("MoE_Model Evaluation Results - loss: {:.8f}, aux_loss: {:.8f}".format(loss.item(), aux_loss.item()))
+        tqdm.write("MoE_Model Evaluation Results - step : {:1d}loss: {:.8f}, aux_loss: {:.8f}".format(step,loss.item(), aux_loss.item()))
     else:
         tqdm.write("MLP_Model Evaluation Results - loss: {:.8f}".format(loss.item()))
 
@@ -262,6 +271,7 @@ def main():
     loss_fn =get_loss_fn(args.lossfn)
     
     model_moe=MOE_modify_beta(args.input_size, args.num_experts,args.hidden_size,args.depth, args.output_size,args.k,args.loss_coef, activation).to(args.device)
+    model_moe.load_state_dict(torch.load('saved_model/model_moe20251107_053752.pth'))
     optimizer = get_optimizer(args.optim,model_moe.parameters(), lr=args.lr)
     model,total_loss_list_moe,rank_list_moe,total_useless_expert_rank_moe=train_loop(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init,\
         model_moe,loss_fn, optimizer, args,args.opt_steps,moe_training=True, writer=writer)
@@ -274,6 +284,7 @@ def main():
     #     model_mlp,loss_fn, optimizer_mlp, args,args.opt_steps,moe_training=False,writer=writer)
     # eval_model(args.opt_steps+args.lbfgs_steps,data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model_mlp, loss_fn,moe_training=False,args=args,writer=writer)
     # plot_dual_axis(np.array(total_loss_list_mlp),None,args.opt_steps+args.lbfgs_steps,"mlp")
+
     
 
 if __name__ == "__main__":

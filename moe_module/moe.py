@@ -127,14 +127,15 @@ class Gating(nn.Module):
     def __init__(self,input_size,num_experts,noise_epsilon=1e-6,gamma=1,R=1):
         super(Gating, self).__init__()
         self.net=nn.Sequential(
-            nn.Linear(input_size,num_experts),
+            nn.Linear(input_size,num_experts*5),
             nn.Tanh(),
-            nn.Linear(num_experts,num_experts),
+            nn.Linear(num_experts*5,num_experts),
             #[I,H]
         )
         self.noisy=nn.Linear(input_size,num_experts)
         self.softplus = nn.Softplus()
         self.noise_epsilon=noise_epsilon
+        
         
 
                 
@@ -196,8 +197,12 @@ class MoE(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
         self.gating_network = Gating(self.input_size,self.num_experts)
     
-    def smoothing(self):
+    def smoothing(self,step,step_lb):
         self.smooth = not self.smooth
+        if step >=step_lb:
+            self.smooth = True
+        # for p in self.gating_network.parameters():
+        #     p.requires_grad = self.smooth
         
     def _prob_in_top_k(self, clean_values, noisy_values, noise_stddev, noisy_top_values):
         """Helper function to NoisyTopKGating.
@@ -264,10 +269,11 @@ class MoE(nn.Module):
     def topkGating(self,x,train):
             ## topk--> softmax
             noisy,clean,noisy_stddev=self.gating_network(x,train)
-            
-            values, indices= torch.topk(noisy,k=self.k,dim=-1) 
-            # top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,] zhou's mode
+            values=noisy
             values=self.softmax(values)
+            values, indices= torch.topk(values,k=self.k,dim=-1) 
+            # top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,] zhou's mode
+            # values=values/(values.sum(1, keepdim=True) + 1e-8)  # normalization
             # values= values / (values.sum(1, keepdim=True) + 1e-8) 
             zeros= torch.zeros_like(noisy, requires_grad=True)
             gates=zeros.scatter(1, indices, values)
@@ -289,8 +295,8 @@ class MoE(nn.Module):
             
             return gates,load
         
-    def soft_topk(self,s: torch.Tensor,k: int,tau1: float = 5e-2,tau2: float = 5e-2):
-        
+    def soft_topk(self,s: torch.Tensor,k: int,tau1: float = 5e-2,tau2: float = 1e-1):
+        s=F.softmax(s,dim=-1)
         diff = torch.unsqueeze(s,-1) - torch.unsqueeze(s,-2)
         sigma = torch.sigmoid(-diff / tau1)
         row_sum = sigma.sum(dim=-1) - 0.5
@@ -299,7 +305,8 @@ class MoE(nn.Module):
         a = torch.sigmoid((k+eps - r_tilde) / tau2)     
 
         a=a*s
-        a=F.softmax(a,dim=-1)
+        # a=a/(a.sum(1, keepdim=True) + 1e-8)
+        
 
         return a
     def forward(self,x,train):
@@ -419,18 +426,18 @@ class MOE_modify_beta(nn.Module):
         self.register_buffer("lb", torch.as_tensor(lb))
         self.register_buffer("ub", torch.as_tensor(ub))
         # === 2️⃣ Beta 网络（可调 depth） ===
-        layers = []
-        in_dim = input_size
-        # 如果 depth = 1，则只有一层线性映射
-        for i in range(2):
-            layers.append(nn.Linear(in_dim, hidden_size))
-            layers.append(nn.ReLU())
-            in_dim = hidden_size
+        # layers = []
+        # in_dim = input_size
+        # # 如果 depth = 1，则只有一层线性映射
+        # for i in range(1):
+        #     layers.append(nn.Linear(in_dim, hidden_size))
+        #     layers.append(nn.ReLU())
+        #     in_dim = hidden_size
 
-        layers.append(nn.Linear(hidden_size, hidden_size,bias=False))
-        self.Beta = nn.Sequential(*layers)
+        # layers.append(nn.Linear(hidden_size, hidden_size,bias=False))
+        # self.Beta = nn.Sequential(*layers)
         
-        # self.linear=nn.Linear(hidden_size, output_size)
+        self.linear=nn.Linear(hidden_size, output_size)
         
 
         
@@ -462,9 +469,9 @@ class MOE_modify_beta(nn.Module):
     def forward(self, x):
         x = 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
         output,loss1=self.model(x, self.training)
-        beta=self.Beta(x)
-        output=(output*beta).sum(dim=1,keepdim=True)
-        # output=self.linear(output)
+        # beta=self.Beta(x)
+        # output=(output*beta).sum(dim=1,keepdim=True)
+        output=self.linear(output)
         loss=loss1
         return output,loss
     
