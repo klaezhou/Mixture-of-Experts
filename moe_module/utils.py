@@ -18,7 +18,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train a Mixture-of-Experts model.")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
-    parser.add_argument("--lr_decay", type=float, default=0.995, help="Learning rate decay factor.")
+    parser.add_argument("--lr_decay", type=float, default=0.997, help="Learning rate decay factor.")
     parser.add_argument("--lr_step", type=int, default=50, help="Learning rate decay step size.")
     parser.add_argument("--device", type=str, default="cuda:5" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
     parser.add_argument("--input_size", type=int, default=2,help="Input size (funcion approximation x) ")
@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument("--depth", type=int, default=7,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adamw")
-    parser.add_argument("--opt_steps", type=int, default=40000)
+    parser.add_argument("--opt_steps", type=int, default=100000)
     parser.add_argument("--activation", type=str, default="tanh", help="activation_function")
     parser.add_argument("--init_func", type=str, default="-sin(pi*x)", help="function")
     parser.add_argument("--x_interval", type=str, default="[-1,1]")
@@ -320,13 +320,13 @@ def save_model(model,name='mlp'):
     torch.save(model.state_dict(), save_path)
     print(f"✅ 模型已保存到: {save_path}")
     
-def gates_image(model,X_test,writer):
+def gates_experts_image(model,X_test,step,writer):
     """for moe mode MOE_modify_beta"""
     moe=model.moe
     with torch.no_grad():
-        gate_output,_,_=moe.gating_network(X_test,train=False)
-        gate_output= gate_output/(moe.epsilon+1e-1*torch.abs(gate_output)) #+1e-4*torch.abs(gates)
-        gate_output= moe.softmax(gate_output)
+        gate_output, _ = moe.soft_topk_Gating(X_test,train=False)
+        # gate_output, _ = moe.e_softmax_Gating(X_test,train=False)
+        # gate_output, _ = moe.topkGating(X_test,train=False)
 
     x = X_test[:,0].detach().cpu().numpy()
     t = X_test[:,1].detach().cpu().numpy()
@@ -353,7 +353,21 @@ def gates_image(model,X_test,writer):
         ax.set_xlabel("x"); ax.set_ylabel("t")
         fig.colorbar(im, ax=ax)
     plt.savefig("gates distribution.png")
-    writer.add_figure("gates_distribution", fig)
+    writer.add_figure("gates_distribution", fig, step)
+
+    cols = min(E, 4)
+    rows = int(np.ceil(E/cols))
+    fig2, axes2 = plt.subplots(rows, cols, figsize=(4*cols, 3.5*rows), squeeze=False)
+    for i in range(E):
+        experts_outputs = model.model[0].experts[i](X_test)
+        experts_outputs = experts_outputs.detach().cpu().numpy().flatten().reshape(nx, nt)
+        ax = axes2[i//cols][i%cols]
+        im = ax.contourf(Xg, Tg, experts_outputs, levels=100, cmap='coolwarm', vmin=-1, vmax=1)
+        ax.set_title(f"Expert {i} output")
+        ax.set_xlabel("x"); ax.set_ylabel("t")
+        fig2.colorbar(im, ax=ax)
+    plt.savefig("experts_output.png")
+    writer.add_figure("experts_output", fig2, step)
 
     plt.tight_layout(); plt.show()
         

@@ -338,6 +338,24 @@ class MoE(nn.Module):
             
             return gates,load
     
+    def soft_topk_Gating(self,x,train, tau1: float = 1e-1, tau2: float = 1e-1):
+        gates,_,_=self.gating_network(x,train)
+        gates=self.softmax(gates)
+        diff = torch.unsqueeze(gates,-1) - torch.unsqueeze(gates,-2)
+        sigma = torch.sigmoid(-diff / tau1)
+        row_sum = sigma.sum(dim=-1) - 0.5
+        r_tilde = 1.0 + row_sum
+        eps=0.5 
+        a = torch.sigmoid((self.k+eps - r_tilde) / tau2)     
+
+        gates=a*gates
+        gates=gates/(gates.sum(dim=-1,keepdim=True)+1e-8)
+
+        load = self._gates_to_load(gates)
+        load=load.float()
+
+        return gates, load
+
     def e_softmax_Gating(self,x,train):
             ## topk--> softmax
             noisy,clean,noisy_stddev=self.gating_network(x,train)
@@ -362,7 +380,8 @@ class MoE(nn.Module):
         
         
     def forward(self,x,train):
-        gates,load= self.e_softmax_Gating(x,train) #[E,]
+        gates,load= self.soft_topk_Gating(x,train) #[E,]
+        # gates,load= self.e_softmax_Gating(x,train) #[E,]
         # gates,load= self.topkGating(x,train) #[E,]
         self.gates_check=gates
         # if not train:
@@ -431,6 +450,7 @@ class MOE_Model(nn.Module):
                     n = p.numel()
                     total += n
             print(f"Total trainable params: {total}\n")
+            return total
     def _init_weights(self):
             for m in self.modules():
                 if isinstance(m, nn.Linear):
@@ -476,6 +496,7 @@ class MLP_Model(nn.Module):
     def _report_trainable(self):
         total = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"=== Trainable parameters ===\nTotal trainable params: {total}\n")
+        return total
 
     @staticmethod
     def _init(m):

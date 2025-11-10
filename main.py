@@ -12,7 +12,7 @@ import argparse
 import numpy as np
 from functorch import make_functional, vmap
 from moe_module.moe import MOE_Model,MLP_Model
-from moe_module.utils import parse_args, _init_data_dim1, get_optimizer, get_loss_fn, log_with_time,plot_dual_axis, plot_expert_useless_rank, get_activation, generate_data, get_writer,gates_image, Timetxt, runcode
+from moe_module.utils import parse_args, _init_data_dim1, get_optimizer, get_loss_fn, log_with_time,plot_dual_axis, plot_expert_useless_rank, get_activation, generate_data, get_writer,gates_experts_image, save_model, Timetxt, runcode
 from moe_module.epi_rank import epi_rank_mlp
 # download data
 import torchvision.transforms as transforms
@@ -95,7 +95,7 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
         if step % 100 == 0:
             eval_model(step,X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training,args)
             if moe_training:
-                gates_image(model,args.X_test,args.writer)
+                gates_experts_image(model,args.X_test, step, args.writer)
 
             #update points
             # args.seed=args.seed+step
@@ -142,6 +142,10 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
                 total_rank_list.append(rank[args.plt_r])
                 tqdm.write(f"Step {step+1}/{steps} - loss: {loss.item():.8f} -rank: {rank}")
                 args.writer.add_scalar('MLP_Loss', total_loss.item(), step)
+
+    if moe_training: save_model(model, "moe")
+    else: save_model(model, "mlp")
+
     return model,total_loss_list,total_rank_list,total_useless_expert_rank
             
 def eval_model(step,X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training=True,args=None):
@@ -249,34 +253,6 @@ def eval_model(step,X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_trai
     plt.show()
 
 # %%
-    # # ---------- 如果是 MoE，再画 experts ----------
-    # if moe_training and model is not None:
-    #     fig, ax2 = plt.subplots(figsize=(10, 8))
-    #     for i in range(model.model[0].num_experts):
-    #         experts_outputs = model.model[0].experts[i](x)
-    #         Z_expert = experts_outputs.detach().cpu().numpy().flatten().reshape(nx, nt)
-    #         cf = ax2.contourf(X1, X2, Z_expert, levels=100, alpha=0.5, cmap='coolwarm')
-    #         plt.colorbar(cf, ax=ax2)
-    #         plt.title(f"Expert {i+1} Output Function")
-    #         plt.xlabel("x")
-    #         plt.ylabel("t")
-    #         plt.savefig(f"expert_{i+1}_function.png")
-    #         plt.show()
-
-    # if moe_training:
-    #     # Plot experts functions
-    #     fig, ax2 = plt.subplots(figsize=(17, 9))
-    #     ax2.plot(x.cpu().numpy(), y.cpu().numpy(), label='Ground Truth', color='k')
-    #     for i in range(model.model[0].num_experts):
-    #         experts_outputs = model.model[0].experts[i](x)
-    #         # plt.subplot(1, model.model[0].num_experts, i + 1)
-    #         ax2.plot(x.cpu().numpy(), experts_outputs.detach().cpu().numpy(), label=f'Expert {i+1}')
-    #         plt.title(f'Experts Function')
-
-    #     fig.tight_layout()
-    #     plt.savefig(f"experts_functions.png")  # 保存图像
-    #     plt.show()
-# %%
 
 
 def main():
@@ -298,6 +274,7 @@ def main():
                          )
 
     model_moe=MOE_Model(args.input_size, args.num_experts,args.hidden_size,args.depth, args.output_size,args.k,args.loss_coef, activation).to(args.device)
+    args.writer.add_text("Numbers of parameters: ",f"{model_moe._report_trainable()}")
     optimizer = get_optimizer(args.optim,model_moe.parameters(), lr=args.lr)
     model,total_loss_list_moe,rank_list_moe,total_useless_expert_rank_moe=train_loop(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model_moe,loss_fn, optimizer, args,args.opt_steps, moe_training=True)
     eval_model(args.opt_steps+args.lbfgs_steps,data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model, loss_fn,moe_training=True,args=args)
@@ -305,6 +282,7 @@ def main():
     plot_expert_useless_rank(np.array(total_loss_list_moe),np.array(total_useless_expert_rank_moe),args.opt_steps+args.lbfgs_steps,"moe")
 
     # model_mlp=MLP_Model(args.input_size, args.hidden_size,args.depth, args.output_size, activation).to(args.device)
+    # args.writer.add_text("Numbers of parameters: ", f"{model_mlp._report_trainable()}")
     # optimizer_mlp=get_optimizer(args.optim,model_mlp.parameters(), lr=args.lr)
     # model_mlp,total_loss_list_mlp,rank_list_mlp,total_useless_expert_rank_mlp=train_loop(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model_mlp,loss_fn, optimizer_mlp, args,args.opt_steps,moe_training=False)
     # eval_model(args.opt_steps+args.lbfgs_steps,data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model_mlp, loss_fn,moe_training=False,args=args)
@@ -313,5 +291,4 @@ def main():
 
 if __name__ == "__main__":
     torch.set_default_dtype(torch.float64)
-    main()      
-    
+    main()
