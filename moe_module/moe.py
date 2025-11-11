@@ -237,6 +237,7 @@ class MoE(nn.Module):
         super(MoE, self).__init__()
         torch.set_default_dtype(torch.float64)
         self.k=k
+        self.smooth=True
         self.depth = depth
         self.loss_coef = loss_coef
         self.num_experts = num_experts
@@ -313,6 +314,13 @@ class MoE(nn.Module):
             return torch.tensor([0], device=x.device, dtype=x.dtype)
         return x.var() / (x.mean()**2 + eps)
     
+    def smoothing(self,step,step_lb):
+        self.smooth = not self.smooth
+        if step >=step_lb:
+            self.smooth = True
+        # for p in self.gating_network.parameters():
+        #     p.requires_grad = self.smooth
+    
     def topkGating(self,x,train):
             ## topk--> softmax
             noisy,clean,noisy_stddev=self.gating_network(x,train)
@@ -329,11 +337,11 @@ class MoE(nn.Module):
             # zeros = torch.zeros_like(Gating, requires_grad=True)
             # gates = zeros.scatter(1, indices, top_k_gates)#Gating: [E,]
             #balance loss
-            if  train:
-                load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0) #[num_experts,]
-            else:
-                load = self._gates_to_load(gates)
-                load=load.float()
+            # if  train:
+            #     load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0) #[num_experts,]
+            # else:
+            load = self._gates_to_load(gates)
+            load=load.float()
                 
             
             return gates,load
@@ -380,9 +388,14 @@ class MoE(nn.Module):
         
         
     def forward(self,x,train):
-        gates,load= self.soft_topk_Gating(x,train) #[E,]
-        # gates,load= self.e_softmax_Gating(x,train) #[E,]
-        # gates,load= self.topkGating(x,train) #[E,]
+        smooth=self.smooth
+        if smooth:
+            gates,load= self.soft_topk_Gating(x,train) #[E,]
+            # gates,load= self.e_softmax_Gating(x,train) #[E,]
+            # gates,load= self.topkGating(x,train) #[E,]
+        else:
+            gates,load= self.topkGating(x,train)
+        
         self.gates_check=gates
         # if not train:
         #     # not train-> print gates

@@ -90,8 +90,20 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
         total_loss.backward()
         return total_loss
     
+    step_count=args.smooth_steps
+
     for step in tqdm_range:
         model.train()
+
+        if moe_training :
+            step_count -=1
+            if model.moe.smooth and step_count<=0:
+                model.moe.smoothing(step,args.smooth_lb)
+                step_count=args.smooth_steps
+            elif step_count<=0 :
+                model.moe.smoothing(step,args.smooth_lb)
+                step_count=args.smooth_steps
+
         if step % 100 == 0:
             eval_model(step,X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training,args)
             if moe_training:

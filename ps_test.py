@@ -53,7 +53,7 @@ def parse_args():
     parser.add_argument("--lbfgs_steps",type=int,default=10000,help="number of steps for lbfgs")
     parser.add_argument("--seed",type=int,default=1234) #1234
     parser.add_argument("--smooth_steps",type=int,default=5,help="number of steps for smooth mode")
-    parser.add_argument("--smooth_lb",type=int,default=0,help="number lower bound of steps for smooth mode")
+    parser.add_argument("--smooth_lb",type=int,default=5000,help="number lower bound of steps for smooth mode")
     parser.add_argument("--x_integral_interval" ,type=str, default="[-1,1]")
     parser.add_argument("--y_integral_interval", type=str, default="[-1,1]")
     return parser.parse_args()
@@ -201,8 +201,21 @@ def train_loop(X_bnd, X_f, X_total, model,loss_fn, optim, args,steps=100,moe_tra
         total_loss.backward()
         return total_loss
     
+    
+    step_count=args.smooth_steps
+    
     for step in tqdm_range:
         model.train()
+        
+        if moe_training :
+            step_count -=1
+            if model.moe.smooth and step_count<=0:
+                model.moe.smoothing(step,args.smooth_lb)
+                step_count=args.smooth_steps
+            elif step_count<=0 :
+                model.moe.smoothing(step,args.smooth_lb)
+                step_count=args.smooth_steps
+
         if step % 100 == 0:
             eval_model(step, X_bnd, X_f, X_total, model, loss_fn,moe_training,args)
             if moe_training:

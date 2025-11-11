@@ -28,7 +28,8 @@ def parse_args():
     parser.add_argument("--depth", type=int, default=7,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adamw")
-    parser.add_argument("--opt_steps", type=int, default=100000)
+    parser.add_argument("--opt_steps", type=int, default=10000, help="number of steps for AdamW")
+    parser.add_argument("--lbfgs_steps",type=int,default=10000,help="number of steps for lbfgs")
     parser.add_argument("--activation", type=str, default="tanh", help="activation_function")
     parser.add_argument("--init_func", type=str, default="-sin(pi*x)", help="function")
     parser.add_argument("--x_interval", type=str, default="[-1,1]")
@@ -41,7 +42,7 @@ def parse_args():
     parser.add_argument("--t_integral_sample", type=int, default=100, help="t_integral_sample")
     parser.add_argument("--nu", type=float, default=0.01/np.pi,help="nu in equation u_t + u*u_x - nu*u_xx=0")
     parser.add_argument("--plt_r", type=int, default=1)
-    parser.add_argument("--epsilon", type=float, default=1e-3)
+    parser.add_argument("--epsilon", type=float, default=1e-3, help="epsilon for rank")
     parser.add_argument("--loss_coef_init", type=float, default=5)
     parser.add_argument("--loss_coef_bnd", type=float, default=5)
     parser.add_argument("--vtn",type=int,default=100)
@@ -49,7 +50,8 @@ def parse_args():
     parser.add_argument("--gt",type=torch.Tensor,default=None,help="ground truth")
     parser.add_argument("--X_test",type=torch.Tensor,default=None,help="test data")
     parser.add_argument("--writer",type=str,default=None,help="tensorboard writer")
-    parser.add_argument("--lbfgs_steps",type=int,default=0,help="number of steps for lbfgs")
+    parser.add_argument("--smooth_steps",type=int,default=5,help="number of steps for smooth mode")
+    parser.add_argument("--smooth_lb",type=int,default=5000,help="number lower bound of steps for smooth mode")
     parser.add_argument("--seed",type=int,default=1234)
     return parser.parse_args()
 def _init_data_dim1(func: str, x_interval: str, t_interval: str, x_num_samples: int, t_num_samples: int, device):
@@ -324,7 +326,12 @@ def gates_experts_image(model,X_test,step,writer):
     """for moe mode MOE_modify_beta"""
     moe=model.moe
     with torch.no_grad():
-        gate_output, _ = moe.soft_topk_Gating(X_test,train=False)
+        if model.moe.smooth:
+            gate_output, _ = moe.soft_topk_Gating(X_test,train=False)
+        else:
+            gate_output,_= moe.topkGating(X_test,train=False)
+
+        # gate_output, _ = moe.soft_topk_Gating(X_test,train=False)
         # gate_output, _ = moe.e_softmax_Gating(X_test,train=False)
         # gate_output, _ = moe.topkGating(X_test,train=False)
 
