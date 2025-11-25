@@ -47,26 +47,26 @@ def pde_residual(model, x_t, nu, moe_training=True):
 @log_with_time
 def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,steps=100,moe_training=True,writer=None):
     scheduler = StepLR(optim, step_size=100, gamma=args.lr_decay)
-    activation=get_activation(args.activation)
     aux_loss,init_loss,bnd_loss,f_loss= 0,0,0,0
     total_loss_list,total_rank_list,total_useless_expert_rank=[],[],[]
     step_count=args.smooth_steps
     for step in range(steps): 
         if moe_training :
             step_count -=1
+            smooth_loop=step #%20000
             if model.moe.smooth and step_count<=0:
-                model.moe.smoothing(step,args.smooth_lb)
+                model.moe.smoothing(smooth_loop,args.smooth_lb)
                 step_count=args.smooth_steps
             elif step_count<=0 :
-                model.moe.smoothing(step,args.smooth_lb)
+                model.moe.smoothing(smooth_loop,args.smooth_lb)
                 step_count=args.smooth_steps
+            
+            
         if step % 500 == 0:
             eval_model(step,X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training,args,writer)
             if moe_training:
                 gates_image(model,args.X_test,writer)
                 # beta_image(model,args.X_test,writer)
-
-                    
                     # model.frozen_beta()
             #update points
             # args.seed=args.seed+step
@@ -97,8 +97,29 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
         total_loss_list.append(total_loss.item())
         total_loss.backward()
         optim.step()
-        if step  <100000 : 
-            scheduler.step()
+        if step  <100000 : scheduler.step()
+        if step % 500 == 0 or step == steps - 1:
+            if moe_training:
+                # rank_moe=epi_rank_moe(model,args.interval,args.integral_sample)
+                # rank=rank_moe.rank_moe()
+                
+                rank_mlp=epi_rank_mlp(model,args.x_integral_interval,args.t_integral_interval,args.x_integral_sample, args.t_integral_sample, args.epsilon,moe_training=True,index=1)
+                rank_list=rank_mlp.rank_mlp()
+                total_rank_list.append(rank_list[args.plt_r])
+                rank_list_experts=rank_mlp.experts_rank_mlp()
+                tqdm.write(f"Step {step+1}/{steps+args.lbfgs_steps} - loss: {loss.item():.8f} -aux_loss: {aux_loss.item():.8f} -rank: {rank_list} \
+                    -experts_rank: {rank_list_experts[:-2]} -total_experts_rank: {rank_list_experts[-2]} -useless_expert_rank: {rank_list_experts[-1]}")
+                writer.add_scalar('MoE_Loss', total_loss.item(), step)
+                writer.add_scalar('Aux_Loss', aux_loss.item(), step)
+                writer.add_scalar('MoE_Rank', rank_list[args.plt_r], step)
+                writer.add_scalar('Useless_Expert_Rank', rank_list_experts[-1], step)
+                total_useless_expert_rank.append(rank_list_experts[-1])
+            else:
+                rank_mlp=epi_rank_mlp(model,args.x_integral_interval,args.t_integral_interval,args.x_integral_sample, args.t_integral_sample,args.epsilon, moe_training=False,index=1)
+                rank=rank_mlp.rank_mlp()
+                total_rank_list.append(rank[args.plt_r])
+                tqdm.write(f"Step {step+1}/{steps+args.lbfgs_steps} - loss: {loss.item():.8f} -rank: {rank}")
+                writer.add_scalar('MLP_Loss', total_loss.item(), step)
     # optimize by lbfgs
     optimizer = optimi.LBFGS(
         model.parameters(),lr=0.5, max_iter=20,        # 每次step内部最多迭代次数 
@@ -135,6 +156,28 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
         
         if step % 100 == 0 :
             eval_model(step,X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training,args,writer)
+        if step % 100 == 0 or step == steps - 1:
+            if moe_training:
+                # rank_moe=epi_rank_moe(model,args.interval,args.integral_sample)
+                # rank=rank_moe.rank_moe()
+                
+                rank_mlp=epi_rank_mlp(model,args.x_integral_interval,args.t_integral_interval,args.x_integral_sample, args.t_integral_sample, args.epsilon,moe_training=True,index=1)
+                rank_list=rank_mlp.rank_mlp()
+                total_rank_list.append(rank_list[args.plt_r])
+                rank_list_experts=rank_mlp.experts_rank_mlp()
+                tqdm.write(f"Step {step+1}/{steps+args.lbfgs_steps} - loss: {loss_lbfgs.item():.8f} -rank: {rank_list} \
+                    -experts_rank: {rank_list_experts[:-2]} -total_experts_rank: {rank_list_experts[-2]} -useless_expert_rank: {rank_list_experts[-1]}")
+                writer.add_scalar('MoE_Loss', total_loss.item(), step)
+                writer.add_scalar('Aux_Loss', aux_loss.item(), step)
+                writer.add_scalar('MoE_Rank', rank_list[args.plt_r], step)
+                writer.add_scalar('Useless_Expert_Rank', rank_list_experts[-1], step)
+                total_useless_expert_rank.append(rank_list_experts[-1])
+            else:
+                rank_mlp=epi_rank_mlp(model,args.x_integral_interval,args.t_integral_interval,args.x_integral_sample, args.t_integral_sample,args.epsilon, moe_training=False,index=1)
+                rank=rank_mlp.rank_mlp()
+                total_rank_list.append(rank[args.plt_r])
+                tqdm.write(f"Step {step+1}/{steps+args.lbfgs_steps} - loss: {loss_lbfgs.item():.8f} -rank: {rank}")
+                writer.add_scalar('MLP_Loss', total_loss.item(), step)
         
     
         
@@ -271,19 +314,19 @@ def main():
     loss_fn =get_loss_fn(args.lossfn)
     
     model_moe=MOE_modify_beta(args.input_size, args.num_experts,args.hidden_size,args.depth, args.output_size,args.k,args.loss_coef, activation).to(args.device)
-    model_moe.load_state_dict(torch.load('saved_model/model_moe20251107_053752.pth'))
+    # model_moe.load_state_dict(torch.load('saved_model/model_moe20251107_053752.pth'))
     optimizer = get_optimizer(args.optim,model_moe.parameters(), lr=args.lr)
     model,total_loss_list_moe,rank_list_moe,total_useless_expert_rank_moe=train_loop(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init,\
         model_moe,loss_fn, optimizer, args,args.opt_steps,moe_training=True, writer=writer)
     eval_model(args.opt_steps+args.lbfgs_steps,data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model, loss_fn,moe_training=True,args=args,writer=writer)
-    plot_dual_axis(np.array(total_loss_list_moe),None,args.opt_steps+args.lbfgs_steps,"moe")
+    plot_dual_axis(np.array(total_loss_list_moe),np.array(rank_list_moe),args.opt_steps+args.lbfgs_steps,"moe")
     
     # model_mlp=MLP_Model(args.input_size, args.hidden_size,args.depth, args.output_size, activation).to(args.device)
     # optimizer_mlp=get_optimizer(args.optim,model_mlp.parameters(), lr=args.lr)
     # model_mlp,total_loss_list_mlp,rank_list_mlp,total_useless_expert_rank_mlp=train_loop(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init,\
     #     model_mlp,loss_fn, optimizer_mlp, args,args.opt_steps,moe_training=False,writer=writer)
     # eval_model(args.opt_steps+args.lbfgs_steps,data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model_mlp, loss_fn,moe_training=False,args=args,writer=writer)
-    # plot_dual_axis(np.array(total_loss_list_mlp),None,args.opt_steps+args.lbfgs_steps,"mlp")
+    # plot_dual_axis(np.array(total_loss_list_mlp),np.array(rank_list_mlp),args.opt_steps+args.lbfgs_steps,"mlp")
 
     
 
