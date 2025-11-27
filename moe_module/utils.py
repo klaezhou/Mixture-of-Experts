@@ -24,8 +24,8 @@ def parse_args():
     parser.add_argument("--input_size", type=int, default=2,help="Input size (funcion approximation x) ")
     parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
     parser.add_argument("--num_experts", type=int, default=2,help="Number of experts")
-    parser.add_argument("--hidden_size", type=int, default=16,help="Hidden size of each expert")
-    parser.add_argument("--depth", type=int, default=7,help="Depth of the MOE model")
+    parser.add_argument("--hidden_size", type=int, default=10,help="Hidden size of each expert")
+    parser.add_argument("--depth", type=int, default=5,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adamw")
     parser.add_argument("--opt_steps", type=int, default=10000, help="number of steps for AdamW")
@@ -210,8 +210,9 @@ def plot_dual_axis(loss: np.ndarray, rank: np.ndarray, step: int,name, writer):
     plt.title("Loss vs. Rank")
     plt.savefig(f"loss_vs_rank_{name}.png")  # 保存图像
     plt.show()
+    writer.add_figure("loss_vs_rank", fig)
 
-def plot_expert_useless_rank(loss: np.ndarray, rank: np.ndarray, step: int,name):
+def plot_expert_useless_rank(loss: np.ndarray, rank: np.ndarray, step: int,name, writer):
     z = np.arange(1, step + 1)
 
     # 插值处理 rank
@@ -239,6 +240,7 @@ def plot_expert_useless_rank(loss: np.ndarray, rank: np.ndarray, step: int,name)
     plt.title("Loss vs. Useless Rank")
     plt.savefig(f"loss_vs_useless_rank_{name}.png")  # 保存图像
     plt.show()
+    writer.add_figure("loss_vs_useless_rank", fig)
 
 def get_activation(name: str):
     name = name.lower()

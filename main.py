@@ -291,7 +291,7 @@ def main():
     model,total_loss_list_moe,rank_list_moe,total_useless_expert_rank_moe=train_loop(data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model_moe,loss_fn, optimizer, args,args.opt_steps, moe_training=True)
     eval_model(args.opt_steps+args.lbfgs_steps,data_X_init,data_X_bnd,data_X_f,data_X_total,data_u_init, model, loss_fn,moe_training=True,args=args)
     plot_dual_axis(np.array(total_loss_list_moe),np.array(rank_list_moe),args.opt_steps+args.lbfgs_steps,"moe",args.writer)
-    plot_expert_useless_rank(np.array(total_loss_list_moe),np.array(total_useless_expert_rank_moe),args.opt_steps+args.lbfgs_steps,"moe")
+    plot_expert_useless_rank(np.array(total_loss_list_moe),np.array(total_useless_expert_rank_moe),args.opt_steps+args.lbfgs_steps,"moe",args.writer)
 
     # model_mlp=MLP_Model(args.input_size, args.hidden_size,args.depth, args.output_size, activation).to(args.device)
     # args.writer.add_text("Numbers of parameters: ", f"{model_mlp._report_trainable()}")

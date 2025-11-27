@@ -190,7 +190,9 @@ class Gating(nn.Module):
     def __init__(self,input_size,num_experts,noise_epsilon=1e-4,gamma=2,R=2):
         super(Gating, self).__init__()
         self.net=nn.Sequential(
-            nn.Linear(input_size,num_experts) #[I,H]
+            nn.Linear(input_size,num_experts), #[I,H]
+            nn.Tanh(),
+            nn.Linear(num_experts,num_experts), #[H,E]
         )
         self.noisy=nn.Linear(input_size,num_experts)
         self.softplus = nn.Softplus()
@@ -238,6 +240,7 @@ class MoE(nn.Module):
         torch.set_default_dtype(torch.float64)
         self.k=k
         self.smooth=True
+        self.fix_gates=False
         self.depth = depth
         self.loss_coef = loss_coef
         self.num_experts = num_experts
@@ -317,16 +320,16 @@ class MoE(nn.Module):
     def smoothing(self,step,step_lb):
         self.smooth = not self.smooth
         if step >=step_lb:
-            self.smooth = True
+            self.smooth = False
         # for p in self.gating_network.parameters():
         #     p.requires_grad = self.smooth
     
     def topkGating(self,x,train):
             ## topk--> softmax
             noisy,clean,noisy_stddev=self.gating_network(x,train)
+            noisy=self.softmax(noisy)
             values, indices= torch.topk(noisy,k=self.k,dim=-1) 
             top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
-            values=self.softmax(values)
             zeros= torch.zeros_like(noisy, requires_grad=True)
             gates=zeros.scatter(1, indices, values)
             ## softmax--> topk-->normalize
@@ -346,7 +349,7 @@ class MoE(nn.Module):
             
             return gates,load
     
-    def soft_topk_Gating(self,x,train, tau1: float = 1e-1, tau2: float = 1e-1):
+    def soft_topk_Gating(self,x,train, tau1: float = 5e-2, tau2: float = 1e-1):
         gates,_,_=self.gating_network(x,train)
         gates=self.softmax(gates)
         diff = torch.unsqueeze(gates,-1) - torch.unsqueeze(gates,-2)
@@ -357,7 +360,7 @@ class MoE(nn.Module):
         a = torch.sigmoid((self.k+eps - r_tilde) / tau2)     
 
         gates=a*gates
-        gates=gates/(gates.sum(dim=-1,keepdim=True)+1e-8)
+        # gates=gates/(gates.sum(dim=-1,keepdim=True)+1e-8)
 
         load = self._gates_to_load(gates)
         load=load.float()
@@ -386,15 +389,27 @@ class MoE(nn.Module):
                 
             return gates,load
         
+    def fixed_gating(self,x,train):
+        x_flat=x.view(-1,self.input_size)
+
+        g0 = (x_flat < 0).float()
+        g1 = 1-g0
+
+        gates=torch.stack([g0,g1],dim=-1)
+        gates=gates.squeeze(-2)
+        load = gates.sum(0)
+        return gates,load
         
     def forward(self,x,train):
         smooth=self.smooth
-        if smooth:
+        if smooth and not self.fix_gates:
             gates,load= self.soft_topk_Gating(x,train) #[E,]
             # gates,load= self.e_softmax_Gating(x,train) #[E,]
             # gates,load= self.topkGating(x,train) #[E,]
-        else:
+        elif not smooth and not self.fix_gates:
             gates,load= self.topkGating(x,train)
+        elif self.fix_gates:
+            gates,load= self.fixed_gating(x,train)
         
         self.gates_check=gates
         # if not train:
@@ -406,6 +421,9 @@ class MoE(nn.Module):
         dispatcher = SparseDispatcher(self.num_experts, gates)
         expert_inputs = dispatcher.dispatch(x)
         gates=dispatcher.expert_to_gates()
+        # for i, g in enumerate(gates):
+        #     print(f"Expert {i} received {g.shape[0]} samples")
+        #     print(f"Gates for Expert {i}: {g}")
         expert_outputs = [self.experts[i](expert_inputs[i]) for i in range(self.num_experts)]
         y = dispatcher.combine(expert_outputs)
         #balance loss
@@ -471,7 +489,7 @@ class MOE_Model(nn.Module):
                     if m.bias is not None:
                         init.zeros_(m.bias)
     def forward(self, x):
-        x = 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
+        # x = 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
         loss=None
         for i, layer in enumerate(self.model):
             if i == 0:  # MoE 层需要 train 参数
