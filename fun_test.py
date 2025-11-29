@@ -36,7 +36,7 @@ def parse_args():
     parser.add_argument("--depth", type=int, default=1,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adam")
-    parser.add_argument("--opt_steps", type=int, default=10000)
+    parser.add_argument("--opt_steps", type=int, default=4000)
     parser.add_argument("--function", type=str, default="func2", help="function")
     parser.add_argument("--interval", type=str, default="[-1,1]")
     parser.add_argument("--num_samples", type=int, default=20000)
@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument("--index", type=int, default=0,help="index of the expert")
     parser.add_argument("--smooth_steps",type=int,default=20,help="number of steps for smooth mode")
     parser.add_argument("--smooth_lb",type=int,default=4000,help="number lower bound of steps for smooth mode")
-    parser.add_argument("--seed",type=int,default=123) #1234
+    parser.add_argument("--seed",type=int,default=42) #1234
     parser.add_argument("--ep",type=torch.tensor,default=torch.tensor([[5e-3]],device="cuda:3" if torch.cuda.is_available() else "cpu")) #1234
     parser.add_argument("--ep1",type=torch.tensor,default=torch.tensor([[-5e-3]],device="cuda:3" if torch.cuda.is_available() else "cpu")) #1234
     return parser.parse_args()
@@ -120,14 +120,14 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
     for step in range(steps):
         
         model.train()
-        if moe_training :
-            step_count -=1
-            if model.moe.smooth and step_count<=0:
-                model.moe.smoothing(step,args.smooth_lb)
-                step_count=args.smooth_steps
-            elif step_count<=0 :
-                model.moe.smoothing(step,args.smooth_lb)
-                step_count=args.smooth_steps
+        # if moe_training :
+        #     step_count -=1
+        #     if model.moe.smooth and step_count<=0:
+        #         model.moe.smoothing(step,args.smooth_lb)
+        #         step_count=args.smooth_steps
+        #     elif step_count<=0 :
+        #         model.moe.smoothing(step,args.smooth_lb)
+        #         step_count=args.smooth_steps
                 
         if moe_training:
             y_hat, aux_loss = model(x)
@@ -221,7 +221,8 @@ def main():
     #%%
 
     model_moe=MOE_Model(args.input_size, args.num_experts,args.hidden_size,args.depth+1, args.output_size,args.k,args.loss_coef).to(args.device)
-    
+    print(model_moe.model[0].parameters)
+
     model_moe.model[0].fix_gates=True
     for p in model_moe.model[0].gating_network.parameters():
         p.requires_grad = False

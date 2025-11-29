@@ -198,8 +198,8 @@ class Gating(nn.Module):
         self.softplus = nn.Softplus()
         self.noise_epsilon=noise_epsilon
 
-        self.udi_init(self.net[0], gamma, R)
-        self.net[0].udi_initialized = True
+        # self.udi_init(self.net[0], gamma, R)
+        # self.net[0].udi_initialized = True
     def udi_init(self, layer, gamma, R):
             # 取出层参数
             weight = torch.randn_like(layer.weight)  # 随机方向
@@ -239,7 +239,7 @@ class MoE(nn.Module):
         super(MoE, self).__init__()
         torch.set_default_dtype(torch.float64)
         self.k=k
-        self.smooth=True
+        self.smooth=False
         self.fix_gates=False
         self.depth = depth
         self.loss_coef = loss_coef
@@ -320,7 +320,7 @@ class MoE(nn.Module):
     def smoothing(self,step,step_lb):
         self.smooth = not self.smooth
         if step >=step_lb:
-            self.smooth = False
+            self.smooth = True
         # for p in self.gating_network.parameters():
         #     p.requires_grad = self.smooth
     
@@ -329,8 +329,9 @@ class MoE(nn.Module):
             noisy,clean,noisy_stddev=self.gating_network(x,train)
             noisy=self.softmax(noisy)
             values, indices= torch.topk(noisy,k=self.k,dim=-1) 
-            top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
-            zeros= torch.zeros_like(noisy, requires_grad=True)
+            # top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
+            values = values / (values.sum(1, keepdim=True) + 1e-3)  # normalization
+            zeros= torch.zeros_like(noisy)
             gates=zeros.scatter(1, indices, values)
             ## softmax--> topk-->normalize
             # Gating = self.softmax(noisy)
@@ -345,7 +346,6 @@ class MoE(nn.Module):
             # else:
             load = self._gates_to_load(gates)
             load=load.float()
-                
             
             return gates,load
     
@@ -357,10 +357,10 @@ class MoE(nn.Module):
         row_sum = sigma.sum(dim=-1) - 0.5
         r_tilde = 1.0 + row_sum
         eps=0.5 
-        a = torch.sigmoid((self.k+eps - r_tilde) / tau2)     
-
+        a = torch.sigmoid((self.k+eps - r_tilde) / tau2) 
+        
         gates=a*gates
-        # gates=gates/(gates.sum(dim=-1,keepdim=True)+1e-8)
+        gates=gates/(gates.sum(dim=-1,keepdim=True)+1e-8)    
 
         load = self._gates_to_load(gates)
         load=load.float()
