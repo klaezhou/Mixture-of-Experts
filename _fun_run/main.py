@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 import argparse
 import numpy as np
 from functorch import make_functional, vmap
-from moe_module.moe import MOE_modify_beta,MLP_Model, MOE_2expert
+from moe_module.moe import MOE_modify_beta,MLP_Model
 from moe_module.utils import parse_args, _init_data_dim1, get_optimizer, get_loss_fn, log_with_time,plot_dual_axis, plot_expert_useless_rank, get_activation\
     ,generate_data,save_model,gates_image,beta_image
 from moe_module.epi_rank import epi_rank_mlp
