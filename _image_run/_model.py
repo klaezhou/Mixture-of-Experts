@@ -1,79 +1,64 @@
-# initialize the network
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# --- 1. 定义核心：基础残差块 (BasicBlock) ---
 class BasicBlock(nn.Module):
-    """
-    ResNet的基本残差块，适用于ResNet-18/34 (使用两个3x3卷积层)
-    """
     expansion = 1
-
     def __init__(self, in_planes, planes, stride=1):
-        super(BasicBlock, self).__init__()
-        
-        # 第一个卷积层: 负责降维/改变特征图大小 (如果 stride > 1)
-        self.conv1 = nn.Conv2d(
-            in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        
-        # 第二个卷积层: 保持尺寸不变
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3,
-                               padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, 3, stride=stride, padding=1, bias=False)
+        self.bn1   = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, 3, padding=1, bias=False)
+        self.bn2   = nn.BatchNorm2d(planes)
 
-        # 定义快捷连接 (Shortcut): 只有当输入和输出特征图尺寸或通道数不匹配时才需要
         self.shortcut = nn.Sequential()
-        if stride != 1 or in_planes != self.expansion * planes:
+        if stride != 1 or in_planes != planes * self.expansion:
             self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, self.expansion * planes,
-                          kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(self.expansion * planes)
+                nn.Conv2d(in_planes, planes * self.expansion, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * self.expansion)
             )
 
     def forward(self, x):
-        # 卷积 -> BN -> ReLU
         out = F.relu(self.bn1(self.conv1(x)))
-        # 卷积 -> BN
         out = self.bn2(self.conv2(out))
-        # 核心：残差连接 (快捷连接 + 卷积输出)
-        out += self.shortcut(x)
-        # 激活
+        out = out + self.shortcut(x)
         out = F.relu(out)
         return out
 
 
-# --- 2. 定义主模型：ResNet ---
 class ResNet(nn.Module):
     def __init__(self, block, num_blocks, num_classes=10):
-        super(ResNet, self).__init__()
-        self.in_planes = 16  # CIFAR-10 ResNet从16个通道开始
+        super().__init__()
+        self.in_planes = 16
 
-        # 1. 初始卷积层：针对32x32输入，使用3x3, stride=1, 不使用MaxPool
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=3,
-                               padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(16)
-        
-        # 2. 残差层 Stage 1-3：通道数从16 -> 32 -> 64
-        # 第一个stage保持尺寸 (32x32)
+        # ----- backbone 部分 -----
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, padding=1, bias=False)
+        self.bn1   = nn.BatchNorm2d(16)
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
-        # 第二个stage尺寸减半 (16x16)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
-        # 第三个stage尺寸再减半 (8x8)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
 
-        # 3. 分类层
-        self.linear = nn.Linear(64 * block.expansion, num_classes)
-        
-        # 权重初始化
+        # 用一个 Sequential 包起来，后面方便保存 / 调用
+        self.backbone = nn.Sequential(
+            self.conv1,
+            self.bn1,
+            nn.ReLU(inplace=True),
+            self.layer1,
+            self.layer2,
+            self.layer3,
+        )
+
+        # ----- 分类头 -----
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))  # 等价于你原来的 avg_pool2d(out, 8)
+        self.fc      = nn.Linear(64 * block.expansion, num_classes)
+
         self._initialize_weights()
 
     def _make_layer(self, block, planes, num_blocks, stride):
-        # 确定是否需要降采样 (downsample)
-        strides = [stride] + [1]*(num_blocks-1)
+        strides = [stride] + [1] * (num_blocks - 1)
         layers = []
-        for stride in strides:
-            layers.append(block(self.in_planes, planes, stride))
+        for s in strides:
+            layers.append(block(self.in_planes, planes, s))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
@@ -84,29 +69,21 @@ class ResNet(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-    
+
+    # 提供一个显式的特征提取接口
+    def extract_features(self, x):
+        x = self.backbone(x)               # (B, 64, 8, 8)
+        x = self.avgpool(x)                # (B, 64, 1, 1)
+        x = torch.flatten(x, 1)            # (B, 64)
+        return x
+
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x))) # (B, 16, 32, 32)
-        out = self.layer1(out)               # (B, 16, 32, 32)
-        out = self.layer2(out)               # (B, 32, 16, 16)
-        out = self.layer3(out)               # (B, 64, 8, 8)
-        
-        # 全局平均池化 (Global Average Pooling): 尺寸从 (B, 64, 8, 8) -> (B, 64, 1, 1)
-        out = F.avg_pool2d(out, 8) 
-        
-        # 展平: (B, 64)
-        out = out.view(out.size(0), -1)
-        # 全连接层分类
-        out = self.linear(out)
-        return out
+        x = self.extract_features(x)
+        x = self.fc(x)
+        return x
 
 
-# --- 3. 工厂函数：创建 ResNet-20 实例 ---
 def ResNet20(num_classes=10):
-    """
-    ResNet-20: 包含3个Stage, 每个Stage有3个BasicBlock (3x2x3 + 2 = 20 层)
-    """
-    # num_blocks = [3, 3, 3]
     return ResNet(BasicBlock, [3, 3, 3], num_classes=num_classes)
 
 #net = ResNet20().to(device)
@@ -193,38 +170,63 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class Gate_resnet(nn.Module):
-    """
-    基于 LeNet-5 架构，修改以适应 CIFAR-10 (3x32x32, 10 类别) 的输入。
-    """
-    def __init__(self, block, num_blocks, num_classes=10):
-        super(Gate_resnet, self).__init__()
-        self.in_planes = 16  # CIFAR-10 ResNet从16个通道开始
+    def __init__(self, block, num_blocks, num_classes=2):
+        super().__init__()
+        self.in_planes = 16
 
-        # 1. 初始卷积层：针对32x32输入，使用3x3, stride=1, 不使用MaxPool
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=3,
-                               padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(16)
-        
-        # 2. 残差层 Stage 1-3：通道数从16 -> 32 -> 64
-        # 第一个stage保持尺寸 (32x32)
+        # ----- backbone 部分 -----
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, padding=1, bias=False)
+        self.bn1   = nn.BatchNorm2d(16)
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
-        # 第二个stage尺寸减半 (16x16)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
-        # 第三个stage尺寸再减半 (8x8)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
 
-        # 3. 分类层
-        self.linear = nn.Linear(64 * block.expansion, num_classes)
+        # 用一个 Sequential 包起来，后面方便保存 / 调用
+        self.backbone = nn.Sequential(
+            self.conv1,
+            self.bn1,
+            nn.ReLU(inplace=True),
+            self.layer1,
+            self.layer2,
+            self.layer3,
+        )
+
+        # ----- 分类头 -----
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))  # 等价于你原来的 avg_pool2d(out, 8)
         
-        # 权重初始化
+        feat_dim = 64*block.expansion
+        self.fc= nn.Sequential(
+            nn.Linear(feat_dim, 64),
+            nn.Tanh(),
+            nn.Linear(64, 32),
+            nn.Tanh(),
+            nn.Linear(32, num_classes)
+        )
+
+
         self._initialize_weights()
+        
+                # 读取两个 state_dict
+        state_dict1 =torch.load("/home/zhy/Zhou/mixture_of_experts/_image_run/saved_cnn/_f5cifar10_cnn_backbone.pth", map_location="cpu")
+        state_dict2 = torch.load("/home/zhy/Zhou/mixture_of_experts/_image_run/saved_cnn/_l5cifar10_cnn_backbone.pth", map_location="cpu")
+
+        # 创建一个新的平均 state_dict
+        state_dict = {}
+
+        for key in state_dict1.keys():
+            # 只对共有的参数做平均
+            if key in state_dict2:
+                state_dict[key] = (state_dict1[key] + state_dict2[key]) / 2
+            else:
+                state_dict[key] = state_dict1[key]
+        self.backbone.load_state_dict(state_dict)
+        self.backbone.requires_grad_(False)
 
     def _make_layer(self, block, planes, num_blocks, stride):
-        # 确定是否需要降采样 (downsample)
-        strides = [stride] + [1]*(num_blocks-1)
+        strides = [stride] + [1] * (num_blocks - 1)
         layers = []
-        for stride in strides:
-            layers.append(block(self.in_planes, planes, stride))
+        for s in strides:
+            layers.append(block(self.in_planes, planes, s))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
@@ -235,22 +237,19 @@ class Gate_resnet(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-    
+
+    # 提供一个显式的特征提取接口
+    def extract_features(self, x):
+        x = self.backbone(x)               # (B, 64, 8, 8)
+        x = self.avgpool(x)                # (B, 64, 1, 1)
+        x = torch.flatten(x, 1)            # (B, 64)
+        return x
+
     def forward(self, x,train=True):
-        out = F.relu(self.bn1(self.conv1(x))) # (B, 16, 32, 32)
-        out = self.layer1(out)               # (B, 16, 32, 32)
-        out = self.layer2(out)               # (B, 32, 16, 16)
-        out = self.layer3(out)               # (B, 64, 8, 8)
-        
-        # 全局平均池化 (Global Average Pooling): 尺寸从 (B, 64, 8, 8) -> (B, 64, 1, 1)
-        out = F.avg_pool2d(out, 8) 
-        
-        # 展平: (B, 64)
-        out = out.view(out.size(0), -1)
-        # 全连接层分类
-        out = self.linear(out)
-        clean,noisy_stddev=x,x
-        return out,clean,noisy_stddev
+        x = self.extract_features(x)
+        x = self.fc(x)
+        clean,nosiy =x,x
+        return x,clean,nosiy
     
     
 
@@ -262,3 +261,8 @@ def Gate_net_CIFAR10(num_classes=2):
     """
     # num_blocks = [3, 3, 3]
     return Gate_resnet(BasicBlock, [3, 3, 3], num_classes=num_classes)
+
+
+
+
+    

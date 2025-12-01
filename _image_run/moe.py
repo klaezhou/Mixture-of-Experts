@@ -64,7 +64,7 @@ class MoE(nn.Module):
         super(MoE, self).__init__()
         self.k=k
         self.depth = depth
-        self.smooth=True
+        self.smooth=False
         self.loss_coef = loss_coef
         self.num_experts = num_experts
         self.input_size = input_size
@@ -86,13 +86,13 @@ class MoE(nn.Module):
         
         self.softmax = nn.Softmax(dim=-1)
         self.gating_network = Gate_net_CIFAR10()
-        self.tau1 ,self.tau2=torch.tensor(1e-5,requires_grad=True),torch.tensor(1e-5,requires_grad=True)
+        self.tau1 ,self.tau2=torch.tensor(1e2,requires_grad=True),torch.tensor(1e2,requires_grad=True)
 
     def smoothing(self,step,step_lb):
         # cross train  -> soft
         self.smooth = not self.smooth
         if step >=step_lb:
-            self.smooth =False
+            self.smooth =True
 
         
     def _prob_in_top_k(self, clean_values, noisy_values, noise_stddev, noisy_top_values):
@@ -267,7 +267,7 @@ class MOE_LeNET_ResNet(nn.Module):
 
 
         
-        self._init_weights()
+        # self._init_weights()
         self._report_trainable()
         
     def frozen_beta(self):
