@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from functorch import make_functional, vmap
 import logging
 import torch.nn.init as init
-from _model import BasicBlock, ResNet20, LeNet, Gate_net_CIFAR10
+from _model import *
 
 
 class SparseDispatcher(object):
@@ -66,22 +66,30 @@ class MoE(nn.Module):
         self.output_size = output_size
         self.epsilon = epsilon
         
-        self.Resnet1=ResNet20()
-        Path1= f"saved_cnn/_f5cifar10_cnn.pt"
-        self.Resnet1.load_state_dict(torch.load(Path1, weights_only=True))
-        self.Resnet2=ResNet20()
-        Path2= f"saved_cnn/_l5cifar10_cnn.pt"
-        self.Resnet2.load_state_dict(torch.load(Path2, weights_only=True))
+        # self.Resnet1=ResNet20()
+        # Path1= f"saved_cnn/_f5cifar10_cnn.pt"
+        # self.Resnet1.load_state_dict(torch.load(Path1, weights_only=True))
+        # self.Resnet2=ResNet20()
+        # Path2= f"saved_cnn/_l5cifar10_cnn.pt"
+        # self.Resnet2.load_state_dict(torch.load(Path2, weights_only=True))
+        # self.experts = nn.ModuleList(
+        #     [self.Resnet1,self.Resnet2]
+        #     )
+        # self.experts.requires_grad_(False)
+
         self.experts = nn.ModuleList(
-            [self.Resnet1, self.Resnet2]
+            [Expert(self.input_size,self.hidden_size,self.output_size,self.depth,activation) for _ in range(num_experts)]
             )
         
-        self.experts.requires_grad_(False)
-        
         self.softmax = nn.Softmax(dim=-1)
-        self.gating_network = Gate_net_CIFAR10()
-        self.tau1 ,self.tau2=torch.tensor(1e-5,requires_grad=True),torch.tensor(1e-5,requires_grad=True)
+        self.gating_network = Gate_fcnn(input_size,num_experts)
+        self.tau1 ,self.tau2=torch.tensor(1e2,requires_grad=True),torch.tensor(1e2,requires_grad=True)
 
+    def smoothing(self,step,step_lb):
+        # cross train  -> soft
+        self.smooth = not self.smooth
+        if step >=step_lb:
+            self.smooth = True
         
     def _prob_in_top_k(self, clean_values, noisy_values, noise_stddev, noisy_top_values):
         """Helper function to NoisyTopKGating.
@@ -142,13 +150,7 @@ class MoE(nn.Module):
         if x.shape[0] == 1:
             return torch.tensor([0], device=x.device, dtype=x.dtype)
         return x.var() / (x.mean()**2 + eps)
-    
 
-    def smoothing(self,step,step_lb):
-        # cross train  -> soft
-        self.smooth = not self.smooth
-        if step >=step_lb:
-            self.smooth = False
 
     
     def topkGating(self,x,train):
@@ -214,28 +216,7 @@ class MoE(nn.Module):
         expert_inputs = dispatcher.dispatch(x)
         gates=dispatcher.expert_to_gates()
 
-        expert_outputs = []
-        output_dim = None     # 等找到非空输出后自动确定
-        # 第一次 pass：遍历 experts，找到一个非空输出确定 output_dim
-        for i in range(self.num_experts):
-            inp = expert_inputs[i]
-            if inp.size(0) > 0:
-                sample_out = self.experts[i](inp)
-                output_dim = sample_out.shape[1]
-                break
-        # 如果所有 expert 输入都空（极少），你可以报错或指定默认维度
-        if output_dim is None:
-            raise RuntimeError("All experts received empty inputs; cannot infer output dimension.")
-        # 第二次 pass：真正计算所有 expert 的输出
-        for i in range(self.num_experts):
-            inp = expert_inputs[i]
-            if inp.size(0) == 0:
-                out = torch.zeros(0, output_dim, device=inp.device)
-            else:
-                out = self.experts[i](inp)
-            expert_outputs.append(out)
-
-        # expert_outputs = [self.experts[i](expert_inputs[i]) for i in range(self.num_experts)]
+        expert_outputs = [self.experts[i](expert_inputs[i]) for i in range(self.num_experts)]
         y = dispatcher.combine(expert_outputs)
         #balance loss
         #batch wise
@@ -243,29 +224,12 @@ class MoE(nn.Module):
         loss=self.cv_squared(importance) + self.cv_squared(load)
         loss*=loss_coef
         return y,loss
-
-class MLP(nn.Module):
-    def __init__(self, hidden_size,activation=nn.Tanh()):
-        super(MLP, self).__init__()
-        self.hidden_size = hidden_size
-        self.model = nn.Sequential(
-            nn.Linear(self.hidden_size, hidden_size),
-            activation
-        )
-
-    def forward(self, x):
-        x = self.model(x)
-        return x
-
-
+    
 
 # example model class MoE_Model
-    
-
-    
-class MOE_LeNET_ResNet(nn.Module):   
+class ResNet_MOE_Model(nn.Module):   
     def __init__(self, input_size, num_experts, hidden_size, depth, output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
-        super(MOE_LeNET_ResNet, self).__init__()
+        super(ResNet_MOE_Model, self).__init__()
         self.input_size = input_size
         self.num_experts = num_experts
         self.hidden_size = hidden_size
@@ -273,7 +237,10 @@ class MOE_LeNET_ResNet(nn.Module):
         self.output_size = output_size
         self.k=k
         self.loss_coef=loss_coef
-        self.moe=MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
+        self.moe=nn.Sequential(
+            ResNet20(),
+            MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
+        )
         self.model=self.moe
 
         self._init_weights()
@@ -299,8 +266,10 @@ class MOE_LeNET_ResNet(nn.Module):
                 if m.bias is not None:
                     init.zeros_(m.bias)
     def forward(self, x):
-        
-        output,loss1=self.model(x, self.training)
-        loss=loss1
+        for i, layer in enumerate(self.model):
+            if i == 0:
+                x = layer(x)
+            else:
+                output, loss = layer(x, self.training)
         return output,loss
     
