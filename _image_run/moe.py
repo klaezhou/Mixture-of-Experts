@@ -83,7 +83,8 @@ class MoE(nn.Module):
         
         self.softmax = nn.Softmax(dim=-1)
         self.gating_network = Gate_fcnn(input_size,num_experts)
-        self.tau1 ,self.tau2=torch.tensor(1e2,requires_grad=True),torch.tensor(1e2,requires_grad=True)
+        self.tau1 ,self.tau2=nn.Parameter(torch.tensor(1e-1)),nn.Parameter(torch.tensor(1e-1))
+        self.tau1.requires_grad, self.tau2.requires_grad= True,True
 
     def smoothing(self,step,step_lb):
         # cross train  -> soft
@@ -273,3 +274,62 @@ class ResNet_MOE_Model(nn.Module):
                 output, loss = layer(x, self.training)
         return output,loss
     
+    
+class ResNet_multiMOE_Model(nn.Module):
+    def __init__(self, input_size, num_experts, hidden_size, depth, output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
+        super(ResNet_multiMOE_Model, self).__init__()
+        self.input_size = input_size
+        self.num_experts = num_experts
+        self.hidden_size = hidden_size
+        self.depth = depth
+        self.output_size = output_size
+        self.k=k
+        self.loss_coef=loss_coef
+        self.moe=nn.ModuleList(
+            [ResNet20()]+
+            [MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation) for _ in range(64 // input_size)]
+        )
+        self.model=self.moe
+
+        self._init_weights()
+        self._report_trainable()
+        
+    def _report_trainable(self):
+            total = 0
+            print("=== Trainable parameters ===")
+            for name, p in self.named_parameters():
+                if p.requires_grad:
+                    n = p.numel()
+                    total += n
+            print(f"Total trainable params: {total}\n")
+        
+    def _init_weights(self):
+        import torch.nn.init as init
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                # 如果是 UDI 初始化过的层，就跳过！
+                if getattr(m, "udi_initialized", False):
+                    continue
+                init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    init.zeros_(m.bias)
+    
+    def forward(self, x):
+        output_list = []
+        loss_list = []
+
+        for i, layer in enumerate(self.model):
+            if i == 0:
+                x = layer(x)
+            else:
+                x_i = x[:, (i-1)*self.input_size : i*self.input_size]
+                out_i, loss_i = layer(x_i, self.training)
+
+                output_list.append(out_i)
+                loss_list.append(loss_i)
+
+        # 在循环结束后再做总和
+        total_output = torch.stack(output_list, dim=1).sum(dim=1)
+        total_loss = sum(loss_list)
+
+        return total_output, total_loss

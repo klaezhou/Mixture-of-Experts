@@ -69,8 +69,12 @@ class ResNet(nn.Module):
             self.layer3,
         )
 
+        self.tau1, self.tau2 = nn.Parameter(torch.tensor(1e-1)), nn.Parameter(torch.tensor(1e-1))
+        self.tau1.requires_grad, self.tau2.requires_grad = True, True
+
         # 3. 分类层
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))  # 等价于你原来的 avg_pool2d(out, 8)
+        self.fc = nn.Linear(64 * block.expansion, num_classes)
         
         # 权重初始化
         self._initialize_weights()
@@ -83,6 +87,25 @@ class ResNet(nn.Module):
             layers.append(block(self.in_planes, planes, s))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
+    
+    def soft_pool(self, x):
+        k=4
+        x = torch.flatten(x, 2)  # (N, C, H*W)
+
+        diff = torch.unsqueeze(x,-1) - torch.unsqueeze(x,-2)    # (N, C, H*W, H*W)
+        sigma = torch.sigmoid(-diff / self.tau1)                # (N, C, H*W, H*W)
+        row_sum = sigma.sum(dim=-1) - 0.5                       # (N, C, H*W)
+        r_tilde = 1 + row_sum                                   # (N, C, H*W)
+        eps = 0.5
+        a = torch.sigmoid((k + eps - r_tilde) / self.tau2)  
+
+        x = x * a
+
+        # weights = weights / (weights.sum(dim=(2,3), keepdim=True) + 1e-8)
+
+        # 执行加权池化
+        y = x.sum(dim=-1, keepdim=True)/4
+        return y
 
     def _initialize_weights(self):
         for m in self.modules():
@@ -95,12 +118,14 @@ class ResNet(nn.Module):
     # 提供一个显式的特征提取接口
     def extract_features(self, x):
         x = self.backbone(x)               # (B, 64, 8, 8)
-        x = self.avgpool(x)                # (B, 64, 1, 1)
+        # x = self.avgpool(x)                # (B, 64, 1, 1)
+        x = self.soft_pool(x)
         x = torch.flatten(x, 1)            # (B, 64)
         return x
 
     def forward(self, x):
         x = self.extract_features(x)
+        x = self.fc(x)
         return x
 
 
