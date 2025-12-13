@@ -124,15 +124,15 @@ class Gating(nn.Module):
     - num_experts (int): The number of experts.
     - noise_epsilon (float): The noise epsilon value. default is 1e-4.
     """
-    def __init__(self,input_size,num_experts,noise_epsilon=1e-6,gamma=1,R=1):
+    def __init__(self,input_size,num_experts,noise_epsilon=1e-6,gamma=5,R=5):
         super(Gating, self).__init__()
         self.net=nn.Sequential(
             # nn.Linear(input_size,num_experts)
-            nn.Linear(input_size,num_experts*1),
-            # nn.Tanh(),
-            # nn.Linear(num_experts*5,num_experts*5),
+            nn.Linear(input_size,num_experts*5),
             nn.Tanh(),
-            nn.Linear(num_experts*1,num_experts),
+            # nn.Linear(num_experts*5,num_experts*5),
+            # nn.Tanh(),
+            nn.Linear(num_experts*5,num_experts),
             #[I,H]
         )
         self.noisy=nn.Linear(input_size,num_experts)
@@ -153,6 +153,9 @@ class Gating(nn.Module):
             layer.weight.data = gamma * weight
             # 偏置均匀分布在 [0, R]
             layer.bias.data.uniform_(0.0, R)
+            # layer.weight.data = torch.zeros_like(layer.weight)
+            # layer.bias.data.zero_()
+            
             
 
     def forward(self,x,train):
@@ -197,15 +200,19 @@ class MoE(nn.Module):
         self.register_buffer("mean", torch.tensor([0.0]))
         self.register_buffer("std", torch.tensor([1.0]))
         self.gates_check=None
-        self.softmax = nn.Softmax(dim=-1)
+        # self.softmax = nn.Softmax(dim=-1)
+        sfep = 0.05   # 你想要的 ε
+        self.softmax = lambda x: nn.functional.softmax(x / sfep, dim=-1)
         self.gating_network = Gating(self.input_size,self.num_experts)
-        self.tau1 ,self.tau2=torch.tensor(1e-5,requires_grad=True),torch.tensor(1e-5,requires_grad=True)
+        self.alpha1 ,self.alpha2=nn.Parameter(torch.tensor(-2.5)),nn.Parameter(
+            torch.tensor(-3.5))
+        self.alpha1.requires_grad , self.alpha2.requires_grad=False,False
 
     def smoothing(self,step,step_lb):
         # cross train  -> soft
         self.smooth = not self.smooth
         if step >=step_lb:
-            self.smooth =True
+            self.smooth =False
 
         
     def _prob_in_top_k(self, clean_values, noisy_values, noise_stddev, noisy_top_values):
@@ -280,9 +287,10 @@ class MoE(nn.Module):
             # top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,] zhou's mode
             # values=values/(values.sum(1, keepdim=True) + 1e-8)  # normalization
             # values= values / (values.sum(1, keepdim=True) + 1e-8) 
-            zeros= torch.zeros_like(noisy, requires_grad=True)
+            zeros= torch.zeros_like(noisy)
             gates=zeros.scatter(1, indices, values)
-            ## softmax--> topk-->normalize
+            # gates= self.softmax(gates)
+            ## softmax--> topk-->normalizess
             # Gating = self.softmax(noisy)
             # values, indices= torch.topk(Gating,k=self.k,dim=-1) 
             # top_logits,_=torch.topk(Gating,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
@@ -301,16 +309,18 @@ class MoE(nn.Module):
             return gates,load
 
     def soft_topk(self,s: torch.Tensor,k: int): #,tau1: float = 5e-2,tau2: float = 1e-2
-        
-        s=F.softmax(s,dim=-1)
+        self.tau1= torch.exp(self.alpha1)
+        self.tau2= torch.exp(self.alpha2)
+        s=self.softmax(s)
         diff = torch.unsqueeze(s,-1) - torch.unsqueeze(s,-2)
         sigma = torch.sigmoid(-diff / self.tau1)
         row_sum = sigma.sum(dim=-1) - 0.5
         r_tilde = 1.0 + row_sum
-        eps=0.5    
+        eps=0.9  
         a = torch.sigmoid((k+eps - r_tilde) / self.tau2)     
 
         a=a*s
+        # a=F.softmax(a,dim=-1)
         # a=a/(a.sum(1, keepdim=True) + 1e-8)
         
 
@@ -542,7 +552,7 @@ class MOE_modify_betap(nn.Module):
                 if m.bias is not None:
                     init.zeros_(m.bias)
     def forward(self, x):
-        x = 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
+        # x = 2.0 * (x - self.lb) / (self.ub - self.lb) - 1.0
         output,loss1=self.model(x, self.training)
         # beta=self.Beta(x)
         # output=(output*beta).sum(dim=1,keepdim=True)
