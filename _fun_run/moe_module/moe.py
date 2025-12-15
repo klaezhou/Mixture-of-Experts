@@ -124,7 +124,7 @@ class Gating(nn.Module):
     - num_experts (int): The number of experts.
     - noise_epsilon (float): The noise epsilon value. default is 1e-4.
     """
-    def __init__(self,input_size,num_experts,noise_epsilon=1e-6,gamma=5,R=5):
+    def __init__(self,input_size,num_experts,noise_epsilon=1e-6,gamma=1,R=1):
         super(Gating, self).__init__()
         self.net=nn.Sequential(
             # nn.Linear(input_size,num_experts)
@@ -201,18 +201,20 @@ class MoE(nn.Module):
         self.register_buffer("std", torch.tensor([1.0]))
         self.gates_check=None
         # self.softmax = nn.Softmax(dim=-1)
-        sfep = 0.05   # 你想要的 ε
+        sfep = 1  #  0.05 control the upper surface of the softmax
         self.softmax = lambda x: nn.functional.softmax(x / sfep, dim=-1)
         self.gating_network = Gating(self.input_size,self.num_experts)
-        self.alpha1 ,self.alpha2=nn.Parameter(torch.tensor(-2.5)),nn.Parameter(
-            torch.tensor(-3.5))
-        self.alpha1.requires_grad , self.alpha2.requires_grad=False,False
+        self.alpha1 ,self.alpha2=nn.Parameter(torch.log(torch.tensor([1e-2]))),nn.Parameter(
+            torch.log(torch.tensor([0.1])))  # 2.5 3.5
+        self.alpha1.requires_grad , self.alpha2.requires_grad=False,True
+        self.eps= nn.Parameter(torch.tensor([6.0]))
+        self.eps.requires_grad=False
 
     def smoothing(self,step,step_lb):
         # cross train  -> soft
         self.smooth = not self.smooth
         if step >=step_lb:
-            self.smooth =False
+            self.smooth =True
 
         
     def _prob_in_top_k(self, clean_values, noisy_values, noise_stddev, noisy_top_values):
@@ -268,45 +270,45 @@ class MoE(nn.Module):
         Returns:
         a `Scalar`.
         """
-        eps = 1e-10
+        epsilon = 1e-10
         # if only num_experts = 1
 
         if x.shape[0] == 1:
             return torch.tensor([0], device=x.device, dtype=x.dtype)
-        return x.var() / (x.mean()**2 + eps)
+        return x.var() / (x.mean()**2 + epsilon)
     
 
     
     def topkGating(self,x,train):
             ## topk--> softmax
-            noisy,clean,noisy_stddev=self.gating_network(x,train)
-            values=noisy
-            
-            values=self.softmax(values)
-            values, indices= torch.topk(values,k=self.k,dim=-1) 
-            # top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,] zhou's mode
-            # values=values/(values.sum(1, keepdim=True) + 1e-8)  # normalization
-            # values= values / (values.sum(1, keepdim=True) + 1e-8) 
-            zeros= torch.zeros_like(noisy)
-            gates=zeros.scatter(1, indices, values)
-            # gates= self.softmax(gates)
-            ## softmax--> topk-->normalizess
-            # Gating = self.softmax(noisy)
-            # values, indices= torch.topk(Gating,k=self.k,dim=-1) 
-            # top_logits,_=torch.topk(Gating,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
-            # top_k_gates = values / (values.sum(1, keepdim=True) + 1e-8)  # normalization
-            # zeros = torch.zeros_like(Gating, requires_grad=True)
-            # gates = zeros.scatter(1, indices, top_k_gates)#Gating: [E,]
-            #balance loss
-            # if  train:
-            #     load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0) #[num_experts,]
-            # else:
-            #     load = self._gates_to_load(gates)
-            #     load=load.float()   #zhou'model
+            s,clean,noisy_stddev=self.gating_network(x,train)
+            # values=noisy
+            # values=self.softmax(values)
+            # values, indices= torch.topk(values,k=self.k,dim=-1) 
+            # # values= values / (values.sum(1, keepdim=True) + 1e-8) 
+            # zeros= torch.zeros_like(noisy)
+            # gates=zeros.scatter(1, indices, values)
+
             load=0
+            k=self.k
+            # with torch.no_grad(): 
+            #     self.alpha2.copy_(torch.log(torch.tensor([0.08], device=x.device)))
+                
+            self.tau1= torch.exp(self.alpha1)
+            self.tau2= torch.exp(self.alpha2)
+            s=self.softmax(s)
+            diff = torch.unsqueeze(s,-1) - torch.unsqueeze(s,-2)
+            sigma = torch.sigmoid(-diff / self.tau1)
+            row_sum = sigma.sum(dim=-1) - 0.5
+            r_tilde = 1.0 + row_sum
+            # with torch.no_grad(): 
+            #     self.eps.copy_(torch.tensor([6.0], device=self.eps.device))# control the lower surface of the sigmoid
+            a = torch.sigmoid((k- r_tilde) / self.tau2 + self.eps)        
+            a= a/(a.sum(1, keepdim=True) )
+            a=a*s
                 
             
-            return gates,load
+            return a,load
 
     def soft_topk(self,s: torch.Tensor,k: int): #,tau1: float = 5e-2,tau2: float = 1e-2
         self.tau1= torch.exp(self.alpha1)
@@ -316,9 +318,8 @@ class MoE(nn.Module):
         sigma = torch.sigmoid(-diff / self.tau1)
         row_sum = sigma.sum(dim=-1) - 0.5
         r_tilde = 1.0 + row_sum
-        eps=0.9  
-        a = torch.sigmoid((k+eps - r_tilde) / self.tau2)     
-
+        a = torch.sigmoid((k- r_tilde) / self.tau2 + self.eps)     
+        a= a/(a.sum(1, keepdim=True))
         a=a*s
         # a=F.softmax(a,dim=-1)
         # a=a/(a.sum(1, keepdim=True) + 1e-8)
@@ -435,7 +436,7 @@ class MOE_modify_beta(nn.Module):
         self.output_size = output_size
         self.k=k
         self.loss_coef=loss_coef
-        self.moe=MoE(input_size, num_experts, hidden_size,depth,hidden_size,self.k,self.loss_coef,activation)
+        self.moe=MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
         self.model=self.moe
         lb=[-1,0]
         ub=[1,1]
@@ -453,16 +454,13 @@ class MOE_modify_beta(nn.Module):
         # layers.append(nn.Linear(hidden_size, hidden_size,bias=False))
         # self.Beta = nn.Sequential(*layers)
         
-        self.linear=nn.Linear(hidden_size, output_size)
+        # self.linear=nn.Linear(hidden_size, output_size)
         
 
         
         self._init_weights()
         self._report_trainable()
         
-    def frozen_beta(self):
-            for p in self.Beta.parameters():
-                p.requires_grad_(False)
     def _report_trainable(self):
             total = 0
             print("=== Trainable parameters ===")
@@ -487,7 +485,7 @@ class MOE_modify_beta(nn.Module):
         output,loss1=self.model(x, self.training)
         # beta=self.Beta(x)
         # output=(output*beta).sum(dim=1,keepdim=True)
-        output=self.linear(output)
+        # output=self.linear(output)
         loss=loss1
         return output,loss
     

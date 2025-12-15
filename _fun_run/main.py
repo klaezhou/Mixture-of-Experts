@@ -89,9 +89,9 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
         bnd_loss = loss_fn(u_hat_bnd, torch.zeros_like(u_hat_bnd))  # zero boundary condition
         f_residual = pde_residual(model, X_f, args.nu, moe_training)
         f_loss = loss_fn(f_residual, torch.zeros_like(f_residual))
-        lambda_l2 = 1e-4 #1e-6
-        reg = lambda_l2 * (((1/model.moe.tau1) ** 2).sum() + ((1/model.moe.tau2 )** 2).sum())
-        loss = args.loss_coef_init *init_loss + args.loss_coef_bnd * bnd_loss + f_loss+reg
+        # lambda_l2 = 1e-4 #1e-6
+        # reg = lambda_l2 * (((1/model.moe.tau1) ** 2).sum() + ((1/model.moe.tau2 )** 2).sum())
+        loss = args.loss_coef_init *init_loss + args.loss_coef_bnd * bnd_loss + f_loss
 
         # combine loss
         if moe_training:total_loss = loss + aux_loss

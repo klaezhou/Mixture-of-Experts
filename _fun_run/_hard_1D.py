@@ -19,7 +19,7 @@ import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
-
+import types
 torch.set_default_dtype(torch.float64)
 
 
@@ -27,7 +27,7 @@ torch.set_default_dtype(torch.float64)
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Mixture-of-Experts model.")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
-    parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate.")
+    parser.add_argument("--lr", type=float, default=5e-3, help="Learning rate.")
     parser.add_argument("--device", type=str, default="cuda:3" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
     parser.add_argument("--input_size", type=int, default=1,help="Input size (funcion approximation x) ")
     parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adam")
     parser.add_argument("--opt_steps", type=int, default=6000)
-    parser.add_argument("--opt_steps_gate", type=int, default=13000)
+    parser.add_argument("--opt_steps_gate", type=int, default=10000)
     parser.add_argument("--function", type=str, default="func2", help="function")
     parser.add_argument("--interval", type=str, default="[-1,1]")
     parser.add_argument("--num_samples", type=int, default=5000)
@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument("--decrease_rate", type=float, default=0.9)
     parser.add_argument("--index", type=int, default=0,help="index of the expert")
     parser.add_argument("--smooth_steps",type=int,default=16,help="number of steps for smooth mode")
-    parser.add_argument("--smooth_lb",type=int,default=20000,help="number lower bound of steps for smooth mode")
+    parser.add_argument("--smooth_lb",type=int,default=10000,help="number lower bound of steps for smooth mode")
     parser.add_argument("--seed",type=int,default=1234) #1234
     parser.add_argument("--ep",type=torch.tensor,default=torch.tensor([[5e-3]],device="cuda:3" if torch.cuda.is_available() else "cpu")) #1234
     parser.add_argument("--ep1",type=torch.tensor,default=torch.tensor([[-5e-3]],device="cuda:3" if torch.cuda.is_available() else "cpu")) #1234
@@ -95,6 +95,7 @@ def piecewise_hard(x: torch.Tensor):
     m2 = (x >= -0.1) & (x <= 1)
     # y[m2] = torch.cos(5*np.pi*x[m2])
     y[m2] = 1/np.abs(x[m2]+1)*torch.cos(5*np.pi*x[m2])
+
 
     return y
 def plot_dual_axis(loss: np.ndarray, rank: np.ndarray, step: int,name):
@@ -158,12 +159,9 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
                 # for p in model.moe.experts.parameters():
                 #     p.requires_grad = False
             elif step_count<=0 :
-                with torch.no_grad(): #0.08
-                    model.moe.alpha2.copy_(torch.log(torch.tensor([0.07], device=x.device)))
+                
                 model.moe.smoothing(step,args.smooth_lb)
-                step_count=args.smooth_steps/args.smooth_steps
-                # for p in model.moe.experts.parameters():
-                #     p.requires_grad = True
+                step_count=args.smooth_steps
                 
         if moe_training:
             y_hat, aux_loss = model(x)
@@ -173,12 +171,9 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
         loss = loss_fn(y_hat, y)
         # combine lossesss
         if moe_training:
-            lambda_l2 = 1e-1#1e-6
-            reg = lambda_l2 * (1/(model.moe.tau2)).sum()
-            # reg=lambda_l2 *(((model.moe.tau1*model.moe.tau2))).sum()
             if model.moe.smooth:
-                total_loss = loss + aux_loss+reg
-            else: total_loss = loss + aux_loss+reg
+                total_loss = loss + aux_loss
+            else: total_loss = loss + aux_loss
         else:
             total_loss = loss
         total_loss_list.append(total_loss.item())
@@ -187,10 +182,7 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
         optim.step()
         scheduler.step()
         if step % 100 == 0 or step == steps - 1:
-            print(f"Step {step+1}/{steps} - loss: {loss.item():.8f}- reg: {reg.item():.8f}")
-            print("model.moe.tau1:",model.moe.tau1.detach().cpu().numpy())
-            print("model.moe.tau2:",model.moe.tau2.detach().cpu().numpy())
-            print("model.moe.eps:",model.moe.eps.detach().cpu().numpy())
+            print(f"Step {step+1}/{steps} - loss: {loss.item():.8f}")
             eval_model(args.data_x, args.data_y, model, loss_fn,moe_training,args)
     return model,total_loss_list
             
@@ -238,9 +230,6 @@ def eval_model(x, y, model, loss_fn,moe_training=True,args=None):
         if model.model.smooth :
             gate_output,_,_=model.model.gating_network(x,train=False)
             gates= model.model.soft_topk(gate_output,model.model.k)
-            # gates= gates/(self.epsilon) # +1e-1*torch.abs(gates)
-            # gates= self.softmax(gates)
-            # gates= gates / (gates.sum(1, keepdim=True) + 1e-8) 
         else:
             gates,load= model.model.topkGating(x,False)
 
@@ -253,9 +242,20 @@ def eval_model(x, y, model, loss_fn,moe_training=True,args=None):
         plt.savefig(f"experts_functions2.png")  # 保存图像
         plt.show()
 
+def new_topkGating(self,x,train):
+        s,clean,noisy_stddev=self.gating_network(x,train)
+        values=s
+        values=self.softmax(values)
+        values, indices= torch.topk(values,k=self.k,dim=-1) 
+        # values= values / (values.sum(1, keepdim=True) + 1e-8) 
+        zeros= torch.zeros_like(s)
+        gates=zeros.scatter(1, indices, values)
+        load=0
+        return gates, load
 
 
 def main():
+    
     args=parse_args()
     torch.manual_seed(args.seed)
     #init data and model
@@ -270,12 +270,9 @@ def main():
     data_x_test=data_x[train_index,:]
     data_y_test=data_y[train_index,:]
     model_moe=MOE_modify_betap(args.input_size, args.num_experts,args.hidden_size,args.depth+1, args.output_size,args.k,args.loss_coef).to(args.device)
-    # load_model(args, model_moe)
-    
-    # for p in model_moe.model.experts.parameters():
-    #     p.requires_grad = False
-    # for p in model_moe.model.gating_network.parameters():
-    #     p.requires_grad = True
+    model_moe.moe.smooth=True
+    model_moe.moe.topkGating=types.MethodType(new_topkGating, model_moe.moe)
+
 
     optimizer = get_optimizer(args.optim,model_moe.parameters(), lr=args.lr)
     model,total_loss_list_moe=train_loop(data_x_test, data_y_test, model_moe,loss_fn, optimizer, args,args.opt_steps_gate)

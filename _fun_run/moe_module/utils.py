@@ -16,7 +16,7 @@ from data import *
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Mixture-of-Experts model.")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
-    parser.add_argument("--lr", type=float, default=2e-3, help="Learning rate.")
+    parser.add_argument("--lr", type=float, default=5e-3, help="Learning rate.")
     parser.add_argument("--device", type=str, default="cuda:5" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
     parser.add_argument("--input_size", type=int, default=2,help="Input size (funcion approximation x) ")
     parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
@@ -25,15 +25,15 @@ def parse_args():
     parser.add_argument("--depth", type=int, default=4,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adam")
-    parser.add_argument("--opt_steps", type=int, default=20000)
+    parser.add_argument("--opt_steps", type=int, default=30000)
     parser.add_argument("--activation", type=str, default="tanh", help="activation_function")
     parser.add_argument("--init_func", type=str, default="-sin(pi*x)", help="function")
     parser.add_argument("--x_interval", type=str, default="[-1,1]")
     parser.add_argument("--t_interval", type=str, default="[0,1]")
-    parser.add_argument("--x_num_samples", type=int, default=100)
-    parser.add_argument("--t_num_samples", type=int, default=50)
+    parser.add_argument("--x_num_samples", type=int, default=200)
+    parser.add_argument("--t_num_samples", type=int, default=100)
     parser.add_argument("--k", type=int, default=1,help="top-k selection")
-    parser.add_argument("--loss_coef", type=float, default=0)
+    parser.add_argument("--loss_coef", type=float, default=1e-2)
     parser.add_argument("--x_integral_sample", type=int, default=200, help="x_integral_sample")
     parser.add_argument("--t_integral_sample", type=int, default=200, help="t_integral_sample")
     parser.add_argument("--nu", type=float, default=0.01/np.pi,help="nu in equation u_t + u*u_x - nu*u_xx=0")
@@ -46,10 +46,10 @@ def parse_args():
     parser.add_argument("--gt",type=torch.Tensor,default=None,help="ground truth")
     parser.add_argument("--X_test",type=torch.Tensor,default=None,help="test data")
     parser.add_argument("--lr_decay",type=float,default=0.996,help="lr decay")
-    parser.add_argument("--lbfgs_steps",type=int,default=500,help="number of steps for lbfgs")
+    parser.add_argument("--lbfgs_steps",type=int,default=200,help="number of steps for lbfgs")
     parser.add_argument("--seed",type=int,default=1234) #1234
-    parser.add_argument("--smooth_steps",type=int,default=5,help="number of steps for smooth mode")
-    parser.add_argument("--smooth_lb",type=int,default=1,help="number lower bound of steps for smooth mode")
+    parser.add_argument("--smooth_steps",type=int,default=18,help="number of steps for smooth mode")
+    parser.add_argument("--smooth_lb",type=int,default=30000,help="number lower bound of steps for smooth mode")
     parser.add_argument("--x_integral_interval" ,type=str, default="[-0.3,0.3]")
     parser.add_argument("--t_integral_interval", type=str, default="[0,1]")
     return parser.parse_args()
@@ -132,8 +132,15 @@ def _init_data_dim1(func: str, x_interval: str, t_interval: str, x_num_samples: 
 
 def get_optimizer(name, model_params, lr=1e-3):
     name = name.lower()
+    # print("eps is in train ", any (p.requires_grad for n,p in model_params if n.endswith("eps")))
+    
+    # main_params= [p for n,p in model_params ] #if n.endswith("eps")==False
+    # # print(main_params)
+    # eps= [p for n,p in model_params if "eps" in n]
+    # print(eps)
     if name == "adam":
-        return torch.optim.Adam(model_params,lr=lr)
+        return optim.Adam(model_params,  lr=lr)
+        # return torch.optim.Adam([{"params":main_params,  "lr":lr},{ "params":eps, "lr":lr*100}])
     elif name == "sgd":
         return optim.SGD(model_params, lr=lr, momentum=0.9)
     elif name == "adamw":
