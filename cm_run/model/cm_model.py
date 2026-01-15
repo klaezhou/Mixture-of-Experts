@@ -115,15 +115,34 @@ class Conv_nn(nn.Module):
                 # 注意：isinstance 是一个单词，中间没有空格
                 if isinstance(m, nn.Conv1d):
                     # 获取卷积核大小，计算初始值
+                    #——————————————————————————————————————————————————————————
                     # m.kernel_size 是一个元组，例如 (3,)，所以取 m.kernel_size[0]
                     val = 1.0 / m.kernel_size[0]
                     
                     # 将权重全部初始化为固定值 1/k
                     init.constant_(m.weight, val)
                     
-                    # 如果有偏置项，也进行相同的初始化（或根据需求设为 0）
-                    if m.bias is not None:
-                        init.constant_(m.bias, val)
+                    #————————————————————————————————————————————————————————————————————————————
+                    # k = m.kernel_size[0]
+                    # # 1. 定义高斯核的标准差 sigma (通常设为 k/6 左右比较合适)
+                    # sigma = k / 8.0 
+                    # center = (k - 1) / 2.0
+                    
+                    # # 2. 计算一维高斯序列
+                    # x = torch.arange(k).float()
+                    # # 高斯公式：exp(-(x - center)^2 / (2 * sigma^2))
+                    # gauss = torch.exp(-(x - center)**2 / (2 * sigma**2))
+                    
+                    # # 3. 归一化 (可选)：让所有权值的和为 1，这样不会改变信号的总强度
+                    # gauss = gauss / gauss.sum()
+                    
+                    # # 4. 将计算好的高斯值赋给权重
+                    # # m.weight 的形状是 (out_channels, in_channels, kernel_size)
+                    # # 我们需要将计算好的一维核广播到所有通道
+                    # with torch.no_grad():
+                    #     m.weight.copy_(gauss.view(1, 1, k).expand_as(m.weight))
+                    
+                    #————————————————————————————————————————————————————————————————————————————
     def get_input(self,y):
         l_out = (self.input_size + 2*self.padding - (self.kernel_size - 1) - 1) // self.stride + 1
 

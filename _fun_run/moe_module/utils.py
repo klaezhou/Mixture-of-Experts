@@ -33,7 +33,7 @@ def parse_args():
     parser.add_argument("--x_num_samples", type=int, default=200)
     parser.add_argument("--t_num_samples", type=int, default=100)
     parser.add_argument("--k", type=int, default=1,help="top-k selection")
-    parser.add_argument("--loss_coef", type=float, default=1e-2)
+    parser.add_argument("--loss_coef", type=float, default=0)
     parser.add_argument("--x_integral_sample", type=int, default=200, help="x_integral_sample")
     parser.add_argument("--t_integral_sample", type=int, default=200, help="t_integral_sample")
     parser.add_argument("--nu", type=float, default=0.01/np.pi,help="nu in equation u_t + u*u_x - nu*u_xx=0")
@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument("--lr_decay",type=float,default=0.996,help="lr decay")
     parser.add_argument("--lbfgs_steps",type=int,default=200,help="number of steps for lbfgs")
     parser.add_argument("--seed",type=int,default=1234) #1234
-    parser.add_argument("--smooth_steps",type=int,default=18,help="number of steps for smooth mode")
+    parser.add_argument("--smooth_steps",type=int,default=36,help="number of steps for smooth mode")
     parser.add_argument("--smooth_lb",type=int,default=30000,help="number lower bound of steps for smooth mode")
     parser.add_argument("--x_integral_interval" ,type=str, default="[-0.3,0.3]")
     parser.add_argument("--t_integral_interval", type=str, default="[0,1]")

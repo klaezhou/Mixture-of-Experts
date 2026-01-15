@@ -15,17 +15,17 @@ class data_generator():
     
             y = torch.empty_like(x, dtype=torch.float64)
 
-            # 1) 振荡段
-            m1 = (x >= -1.0) & (x < -0.7) # 0-0.1
+            # 1) 振荡段2
+            m1 = (x >= -1.0) & (x < -0.3) # 0-0.1
             # y[m1] = 1/2*torch.cos(1*np.pi*x[m1])+1/2
-            # y[m1] = torch.cos(5*np.pi*x[m1])
-            y[m1] = -1/torch.abs(x[m1]-1)*torch.cos(10*np.pi*x[m1])
+            y[m1] = torch.cos(3*np.pi*x[m1])
+            # y[m1] = -1/torch.abs(x[m1]-1)*torch.cos(10*np.pi*x[m1])
             # 2) 常值段（与左侧跳跃）
-            m2 = (x >= -0.7) & (x <= 1)
+            m2 = (x >= -0.3) & (x <= 1)
             # y[m2] = 1/2*torch.cos(1*np.pi*x[m2])
-            y[m2] = 1/torch.abs(x[m2]+1)*torch.cos(10*np.pi*x[m2])
+            # y[m2] = 1/torch.abs(x[m2]+1)*torch.cos(10*np.pi*x[m2])
             # m3 = (x >= 0.3) & (x <= 1)
-            # y[m2] = -torch.sin(5*np.pi*x[m2])
+            y[m2] = -torch.cos(3*np.pi*x[m2])
             # y[m3] = 1/np.abs(x[m3]+1)*torch.sin(2*np.pi*x[m3])
             return y
         f=piecewise_hard

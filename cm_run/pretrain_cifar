@@ -1,0 +1,80 @@
+from Pipeline.pl_cifar import Pipeline
+import argparse
+import torch
+import numpy as np
+import logging
+
+import logging
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO, # 设置级别为 INFO
+    format='%(asctime)s - %(levelname)s - %(message)s', # 时间 - 级别 - 内容
+    handlers=[
+        logging.FileHandler("train.log"), # 保存到文件
+        logging.StreamHandler()            # 输出到屏幕
+    ]
+)
+
+logging.info("模型开始构建...")
+def parse_args():
+        parser = argparse.ArgumentParser(description="Train a Mixture-of-Experts model.")
+        parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs.")
+        parser.add_argument("--lr", type=float, default=5e-2, help="Learning rate.")
+        parser.add_argument("--device", type=str, default="cuda:7" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
+        parser.add_argument("--input_size", type=int, default=3072,help="Input size (funcion approximation x) ")
+        parser.add_argument("--gating_hidden_size", type=int, default=10,help="Hidden size of the G")
+        parser.add_argument("--gating_depth", type=int, default=1,help="Depth of the G")
+        parser.add_argument("--log_interval", type=int, default=2, help="Logging interval.")
+        parser.add_argument("--class_num", type=int, default=10)
+        parser.add_argument("--class_index", type=list, default= [0,1,2,3,4,5,6,7,8,9]) # [5,6,7,8,9] 0,1,2,3,4
+        parser.add_argument("--smooth_steps",type=int,default=20,help="number of steps for smooth mode")
+        parser.add_argument("--smooth_lb",type=int,default=20000,help="number lower bound of steps for smooth mode")
+        parser.add_argument("--path",type=str,default="/home/zhy/Zhou/mixture_of_experts/cm_run/log_model/res2.pth",help="path to save the model")
+        
+        parser.add_argument("--path1",type=str,default="/home/zhy/Zhou/mixture_of_experts/cm_run/log_model/res1.pth")
+        parser.add_argument("--path2",type=str,default="/home/zhy/Zhou/mixture_of_experts/cm_run/log_model/res2.pth")
+        parser.add_argument("--pathpf",type=str,default="/home/zhy/Zhou/mixture_of_experts/cm_run/log_model/PF_vision1.pth")
+        parser.add_argument("--seed",type=int,default=1234) #1234
+        parser.add_argument("--epsilon",type=float,default=0)
+        parser.add_argument("--eps_lb",type=float,default=-3)
+        return parser.parse_args()
+    
+    
+
+# torch.manual_seed(args.seed)
+# torch.set_default_dtype(torch.float64)
+# Pipeline=Pipeline(args)
+# Pipeline.data_loader()
+# model=Pipeline.build_model()
+# Pipeline.load_model()
+# print(model)
+# Pipeline.train_model()
+# Pipeline.test_model()
+
+args=parse_args()
+torch.manual_seed(args.seed)
+torch.set_default_dtype(torch.float64)
+Pipeline=Pipeline(args)
+Pipeline.data_loader()
+PF_model=Pipeline.build_gate_model()
+model=Pipeline.build_model()
+Pipeline.load_model(args.path1)
+Pipeline.test_model()
+Pipeline.load_model(args.path2)
+Pipeline.test_model()
+# Pipeline.load_gate_model()
+# print(PF_model)
+# Pipeline.change_conv(11)
+# Pipeline.train_gate_model()
+# Pipeline.test_PF_model()   
+# Pipeline.change_conv(7)
+# Pipeline.train_gate_model()
+# Pipeline.test_PF_model()
+# Pipeline.change_conv(3)
+# Pipeline.train_gate_model()
+# Pipeline.test_PF_model()
+Pipeline.change_conv(0)
+Pipeline.train_gate_model()
+Pipeline.test_PF_model()
+

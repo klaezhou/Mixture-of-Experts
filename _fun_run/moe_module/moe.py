@@ -128,11 +128,11 @@ class Gating(nn.Module):
         super(Gating, self).__init__()
         self.net=nn.Sequential(
             # nn.Linear(input_size,num_experts)
-            nn.Linear(input_size,num_experts*5),
-            nn.Tanh(),
-            # nn.Linear(num_experts*5,num_experts*5),
-            # nn.Tanh(),
-            nn.Linear(num_experts*5,num_experts),
+            nn.Linear(input_size,num_experts),
+            # nn.ReLU(),
+            # # nn.Linear(num_experts*5,num_experts*5),
+            # # nn.ReLU(),
+            # nn.Linear(num_experts*5,num_experts),
             #[I,H]
         )
         self.noisy=nn.Linear(input_size,num_experts)
@@ -201,8 +201,8 @@ class MoE(nn.Module):
         self.register_buffer("std", torch.tensor([1.0]))
         self.gates_check=None
         # self.softmax = nn.Softmax(dim=-1)
-        sfep = 1  #  0.05 control the upper surface of the softmax
-        self.softmax = lambda x: nn.functional.softmax(x / sfep, dim=-1)
+        self.sfep = 1 #  0.05 control the upper surface of the softmax
+        self.softmax = lambda x: nn.functional.softmax(x / self.sfep, dim=-1)
         self.gating_network = Gating(self.input_size,self.num_experts)
         self.alpha1 ,self.alpha2=nn.Parameter(torch.log(torch.tensor([1e-2]))),nn.Parameter(
             torch.log(torch.tensor([0.1])))  # 2.5 3.5
@@ -547,6 +547,7 @@ class MOE_modify_betap(nn.Module):
                 if getattr(m, "udi_initialized", False):
                     continue
                 init.xavier_normal_(m.weight)
+                # init.zeros_(m.weight)
                 if m.bias is not None:
                     init.zeros_(m.bias)
     def forward(self, x):

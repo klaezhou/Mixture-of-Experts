@@ -1,6 +1,3 @@
-
-
-
 import torch
 import torch.nn as nn
 import numpy as np 
@@ -9,7 +6,7 @@ import torch.nn.functional as F
 from functorch import make_functional, vmap
 import logging
 import torch.nn.init as init
-from _model import BasicBlock, ResNet20, LeNet, Gate_net_CIFAR10
+from _model import *
 
 
 class SparseDispatcher(object):
@@ -49,9 +46,6 @@ class SparseDispatcher(object):
 
 
 
-
-        
-    
 class MoE(nn.Module):
     """MOE Block 
 
@@ -64,7 +58,7 @@ class MoE(nn.Module):
         super(MoE, self).__init__()
         self.k=k
         self.depth = depth
-        self.smooth=False
+        self.smooth=True
         self.loss_coef = loss_coef
         self.num_experts = num_experts
         self.input_size = input_size
@@ -72,28 +66,37 @@ class MoE(nn.Module):
         self.output_size = output_size
         self.epsilon = epsilon
         
-        self.Resnet1=ResNet20()
-        Path1= f"/home/zhy/Zhou/mixture_of_experts/_image_run/saved_cnn/_f5cifar10_cnn.pt"
-        self.Resnet1.load_state_dict(torch.load(Path1, weights_only=True))
-        self.Resnet2=ResNet20()
-        Path2= f"/home/zhy/Zhou/mixture_of_experts/_image_run/saved_cnn/_l5cifar10_cnn.pt"
-        self.Resnet2.load_state_dict(torch.load(Path2, weights_only=True))
+        # self.Resnet1=ResNet20()
+        # Path1= f"saved_cnn/_f5cifar10_cnn.pt"
+        # self.Resnet1.load_state_dict(torch.load(Path1, weights_only=True))
+        # self.Resnet2=ResNet20()
+        # Path2= f"saved_cnn/_l5cifar10_cnn.pt"
+        # self.Resnet2.load_state_dict(torch.load(Path2, weights_only=True))
+        # self.experts = nn.ModuleList(
+        #     [self.Resnet1,self.Resnet2]
+        #     )
+        # self.experts.requires_grad_(False)
+
         self.experts = nn.ModuleList(
-            [self.Resnet1, self.Resnet2]
+            [Expert(self.input_size,self.hidden_size,self.output_size,self.depth,activation) for _ in range(num_experts)]
             )
         
-        self.experts.requires_grad_(False)
+        sfep = 1  # 你想要的 ε
+        self.softmax = lambda x: nn.functional.softmax(x / sfep, dim=-1)
+        self.gating_network = Gate_fcnn(input_size,num_experts)
+        self.alpha1 ,self.alpha2=nn.Parameter(torch.log(torch.tensor([1e-2]))),nn.Parameter(
+            torch.log(torch.tensor([0.1])))
+        self.alpha1.requires_grad , self.alpha2.requires_grad=False,True
+        self.eps= nn.Parameter(torch.tensor([6.0]))
+        self.eps.requires_grad=False
         
-        self.softmax = nn.Softmax(dim=-1)
-        self.gating_network = Gate_net_CIFAR10()
-        self.tau1 ,self.tau2=torch.tensor(1e2,requires_grad=True),torch.tensor(1e2,requires_grad=True)
+        
 
     def smoothing(self,step,step_lb):
         # cross train  -> soft
         self.smooth = not self.smooth
         if step >=step_lb:
-            self.smooth =True
-
+            self.smooth = True
         
     def _prob_in_top_k(self, clean_values, noisy_values, noise_stddev, noisy_top_values):
         """Helper function to NoisyTopKGating.
@@ -154,63 +157,54 @@ class MoE(nn.Module):
         if x.shape[0] == 1:
             return torch.tensor([0], device=x.device, dtype=x.dtype)
         return x.var() / (x.mean()**2 + eps)
-    
+
 
     
     def topkGating(self,x,train):
-            ## topk--> softmax
-            noisy,clean,noisy_stddev=self.gating_network(x,train)
-            values=noisy
-            
-            values=self.softmax(values)
-            values, indices= torch.topk(values,k=self.k,dim=-1) 
-            # top_logits,_=torch.topk(noisy,k=self.k+1,dim=-1) #values: [k,] indices: [k,] zhou's mode
-            # values=values/(values.sum(1, keepdim=True) + 1e-8)  # normalization
-            # values= values / (values.sum(1, keepdim=True) + 1e-8) 
-            zeros= torch.zeros_like(noisy, requires_grad=True)
-            gates=zeros.scatter(1, indices, values)
-            ## softmax--> topk-->normalize
-            # Gating = self.softmax(noisy)
-            # values, indices= torch.topk(Gating,k=self.k,dim=-1) 
-            # top_logits,_=torch.topk(Gating,k=self.k+1,dim=-1) #values: [k,] indices: [k,]
-            # top_k_gates = values / (values.sum(1, keepdim=True) + 1e-8)  # normalization
-            # zeros = torch.zeros_like(Gating, requires_grad=True)
-            # gates = zeros.scatter(1, indices, top_k_gates)#Gating: [E,]
-            #balance loss
-            # if  train:
-            #     load = (self._prob_in_top_k(clean, noisy, noisy_stddev, top_logits)).sum(0) #[num_experts,]
-            # else:
-            #     load = self._gates_to_load(gates)
-            #     load=load.float()   #zhou'model
+            s,clean,noisy_stddev=self.gating_network(x,train)
             load=0
+            k=self.k
+            # with torch.no_grad(): 
+            #     self.alpha2.copy_(torch.log(torch.tensor([0.08], device=x.device)))
+                
+            self.tau1= torch.exp(self.alpha1)
+            self.tau2= torch.exp(self.alpha2)
+            s=self.softmax(s)
+            diff = torch.unsqueeze(s,-1) - torch.unsqueeze(s,-2)
+            sigma = torch.sigmoid(-diff / self.tau1)
+            row_sum = sigma.sum(dim=-1) - 0.5
+            r_tilde = 1.0 + row_sum
+            # with torch.no_grad(): 
+            #     self.eps.copy_(torch.tensor([6.0], device=self.eps.device))# control the lower surface of the sigmoid
+            a = torch.sigmoid((k- r_tilde) / self.tau2 + self.eps)        
+            a= a/(a.sum(1, keepdim=True) )
+            a=a*s
                 
             
-            return gates,load
+            return a,load
 
-    def soft_topk(self,s: torch.Tensor,k: int): #,tau1: float = 5e-2,tau2: float = 1e-2
-        
-        s=F.softmax(s,dim=-1)
+    def soft_topk_Gating(self,x,train):
+        self.tau1= torch.exp(self.alpha1)
+        self.tau2= torch.exp(self.alpha2)
+        gates,_,_=self.gating_network(x,train)
+        s=self.softmax(gates)
         diff = torch.unsqueeze(s,-1) - torch.unsqueeze(s,-2)
         sigma = torch.sigmoid(-diff / self.tau1)
         row_sum = sigma.sum(dim=-1) - 0.5
         r_tilde = 1.0 + row_sum
-        eps=0.5    
-        a = torch.sigmoid((k+eps - r_tilde) / self.tau2)     
-
+        a = torch.sigmoid((self.k- r_tilde) / self.tau2 + self.eps)     
+        a= a/(a.sum(1, keepdim=True))
         a=a*s
-        # a=a/(a.sum(1, keepdim=True) + 1e-8)
-        
+        load=0
 
-        return a
+        return a, load
+    
     def forward(self,x,train):
         smooth=self.smooth
         if smooth:
-            
-            gates,_,_=self.gating_network(x,train)
-            gates= self.soft_topk(gates, self.k)
-            # gates= gates/(self.epsilon) # +1e-1*torch.abs(gates)
-            # gates= self.softmax(gates)
-            # gates= gates / (gates.sum(1, keepdim=True) + 1e-8) 
+            gates,load= self.soft_topk_Gating(x,train) #[E,]
+            # gates,load= self.e_softmax_Gating(x,train) #[E,]
+            # gates,load= self.topkGating(x,train) #[E,]
         else:
             gates,load= self.topkGating(x,train)
         
@@ -224,37 +218,21 @@ class MoE(nn.Module):
         dispatcher = SparseDispatcher(self.num_experts, gates)
         expert_inputs = dispatcher.dispatch(x)
         gates=dispatcher.expert_to_gates()
+
         expert_outputs = [self.experts[i](expert_inputs[i]) for i in range(self.num_experts)]
         y = dispatcher.combine(expert_outputs)
         #balance loss
         #batch wise
         loss_coef=self.loss_coef
-        loss=self.cv_squared(importance) # + self.cv_squared(load) zhou'model
+        loss=self.cv_squared(importance)  #+ self.cv_squared(load)
         loss*=loss_coef
         return y,loss
-
-class MLP(nn.Module):
-    def __init__(self, hidden_size,activation=nn.Tanh()):
-        super(MLP, self).__init__()
-        self.hidden_size = hidden_size
-        self.model = nn.Sequential(
-            nn.Linear(self.hidden_size, hidden_size),
-            activation
-        )
-
-    def forward(self, x):
-        x = self.model(x)
-        return x
-
-
+    
 
 # example model class MoE_Model
-    
-
-    
-class MOE_LeNET_ResNet(nn.Module):   
+class ResNet_MOE_Model(nn.Module):   
     def __init__(self, input_size, num_experts, hidden_size, depth, output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
-        super(MOE_LeNET_ResNet, self).__init__()
+        super(ResNet_MOE_Model, self).__init__()
         self.input_size = input_size
         self.num_experts = num_experts
         self.hidden_size = hidden_size
@@ -262,17 +240,15 @@ class MOE_LeNET_ResNet(nn.Module):
         self.output_size = output_size
         self.k=k
         self.loss_coef=loss_coef
-        self.moe=MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
+        self.moe=nn.Sequential(
+            ResNet20(),
+            MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation)
+        )
         self.model=self.moe
 
-
-        
-        # self._init_weights()
+        self._init_weights()
         self._report_trainable()
         
-    def frozen_beta(self):
-            for p in self.Beta.parameters():
-                p.requires_grad_(False)
     def _report_trainable(self):
             total = 0
             print("=== Trainable parameters ===")
@@ -293,11 +269,130 @@ class MOE_LeNET_ResNet(nn.Module):
                 if m.bias is not None:
                     init.zeros_(m.bias)
     def forward(self, x):
-        
-        output,loss1=self.model(x, self.training)
-        # beta=self.Beta(x)
-        # output=(output*beta).sum(dim=1,keepdim=True)
-        # output=self.linear(output)
-        loss=loss1
+        for i, layer in enumerate(self.model):
+            if i == 0:
+                x = layer(x)
+            else:
+                output, loss = layer(x, self.training)
         return output,loss
     
+    
+class ResNet_multiMOE_Model(nn.Module):
+    def __init__(self, input_size, num_experts, hidden_size, depth, output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
+        super(ResNet_multiMOE_Model, self).__init__()
+        self.input_size = input_size
+        self.num_experts = num_experts
+        self.hidden_size = hidden_size
+        self.depth = depth
+        self.output_size = output_size
+        self.k=k
+        self.loss_coef=loss_coef
+        self.moe=nn.ModuleList(
+            [ResNet20()]+
+            [MoE(input_size, num_experts, hidden_size,depth,output_size,self.k,self.loss_coef,activation) for _ in range(64 // input_size)]
+        )
+        self.model=self.moe
+
+        self._init_weights()
+        self._report_trainable()
+        
+    def _report_trainable(self):
+            total = 0
+            print("=== Trainable parameters ===")
+            for name, p in self.named_parameters():
+                if p.requires_grad:
+                    n = p.numel()
+                    total += n
+            print(f"Total trainable params: {total}\n")
+        
+    def _init_weights(self):
+        import torch.nn.init as init
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                # 如果是 UDI 初始化过的层，就跳过！
+                if getattr(m, "udi_initialized", False):
+                    continue
+                init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    init.zeros_(m.bias)
+    
+    def forward(self, x):
+        output_list = []
+        loss_list = []
+
+        for i, layer in enumerate(self.model):
+            if i == 0:
+                x = layer(x)
+            else:
+                x_i = x[:, (i-1)*self.input_size : i*self.input_size]
+                out_i, loss_i = layer(x_i, self.training)
+
+                output_list.append(out_i)
+                loss_list.append(loss_i)
+
+        # 在循环结束后再做总和
+        total_output = torch.stack(output_list, dim=1).sum(dim=1)
+        total_loss = sum(loss_list)
+
+        return total_output, total_loss
+    
+    
+    
+class MoE_vision(nn.Module):
+        def __init__(self, input_size, num_experts, hidden_size, depth, output_size,k=2,loss_coef=1e-2,activation=nn.Tanh()):
+            self.depth=depth
+            super(MoE_vision, self).__init__()
+            self.activation=activation
+            layer_list = []
+            self.k=k
+            self.loss_coef=loss_coef
+            self.trans_layer=nn.Sequential(
+                nn.Linear(784, input_size),
+                nn.ReLU(),
+            ) # 3072 cifar 784 mnist
+            self.trans_layer.requires_grad_(False)
+            self.expert_depth=1
+            layer_list.append(MoE(input_size, num_experts, hidden_size,self.expert_depth,hidden_size,self.k,self.loss_coef,activation) )  #[I,H]
+            for i in range(self.depth-1):
+                layer_list.append(MoE(hidden_size, num_experts, hidden_size,self.expert_depth,hidden_size,self.k,self.loss_coef,activation) )  #[I,H]
+
+            layer_list.append(MoE(hidden_size, num_experts, hidden_size,self.expert_depth,output_size,self.k,self.loss_coef,activation) )  #[I,H]
+            self.moe= nn.ModuleList(layer_list)
+            self._init_weights()
+            self._report_trainable()
+            
+        def _report_trainable(self):
+            total = 0
+            print("=== Trainable parameters ===")
+            for name, p in self.named_parameters():
+                if p.requires_grad:
+                    n = p.numel()
+                    total += n
+            print(f"Total trainable params: {total}\n")
+        def _init_weights(self):
+                for m in self.trans_layer.modules():
+                    if isinstance(m, nn.Linear):
+                        init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
+                        if m.bias is not None:
+                            init.zeros_(m.bias)
+                for m in self.moe.modules():
+                    if isinstance(m, nn.Linear):
+                        init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
+                        if m.bias is not None:
+                            init.zeros_(m.bias)
+        def forward(self, y,train=True):
+            y = y.view(y.size(0), -1)
+            y=self.trans_layer(y)
+            total_loss=0
+            for i, layer in enumerate(self.moe[:]):
+                if i % 2 == 0:
+                    y_block = y            # block 的输入
+
+                y,loss= layer(y, train)
+                y = self.activation(y)
+                total_loss+=loss
+                if i % 2 == 1 and i >1:
+                    y = y + y_block        # block 结束时再加
+
+            total_loss= self.loss_coef*total_loss
+            return y, total_loss

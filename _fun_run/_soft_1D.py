@@ -19,6 +19,8 @@ import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
+import imageio
+import os
 
 torch.set_default_dtype(torch.float64)
 
@@ -27,17 +29,17 @@ torch.set_default_dtype(torch.float64)
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Mixture-of-Experts model.")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
-    parser.add_argument("--lr", type=float, default=1e-2, help="Learning rate.")
+    parser.add_argument("--lr", type=float, default=5e-3, help="Learning rate.")
     parser.add_argument("--device", type=str, default="cuda:3" if torch.cuda.is_available() else "cpu", help="Device to train on.")    
     parser.add_argument("--input_size", type=int, default=1,help="Input size (funcion approximation x) ")
     parser.add_argument("--output_size", type=int, default=1,help="Output size (funcion approximation y=u(x)) ")
     parser.add_argument("--num_experts", type=int, default=2,help="Number of experts")
-    parser.add_argument("--hidden_size", type=int, default=5,help="Hidden size of the MLP")
-    parser.add_argument("--depth", type=int, default=3,help="Depth of the MOE model")
+    parser.add_argument("--hidden_size", type=int, default=4,help="Hidden size of the MLP")
+    parser.add_argument("--depth", type=int, default=1,help="Depth of the MOE model")
     parser.add_argument("--lossfn", type=str, default="mse", help="Loss function.")
     parser.add_argument("--optim", type=str, default="adam")
     parser.add_argument("--opt_steps", type=int, default=6000)
-    parser.add_argument("--opt_steps_gate", type=int, default=13000)
+    parser.add_argument("--opt_steps_gate", type=int, default=5000)
     parser.add_argument("--function", type=str, default="func2", help="function")
     parser.add_argument("--interval", type=str, default="[-1,1]")
     parser.add_argument("--num_samples", type=int, default=5000)
@@ -50,52 +52,29 @@ def parse_args():
     parser.add_argument("--smooth_steps",type=int,default=16,help="number of steps for smooth mode")
     parser.add_argument("--smooth_lb",type=int,default=20000,help="number lower bound of steps for smooth mode")
     parser.add_argument("--seed",type=int,default=1234) #1234
-    parser.add_argument("--ep",type=torch.tensor,default=torch.tensor([[5e-3]],device="cuda:3" if torch.cuda.is_available() else "cpu")) #1234
-    parser.add_argument("--ep1",type=torch.tensor,default=torch.tensor([[-5e-3]],device="cuda:3" if torch.cuda.is_available() else "cpu")) #1234
+    parser.add_argument("--fig_index", type=int, default=0)
+    parser.add_argument("--ep",type=torch.tensor,default=torch.tensor([[1e-2]],device="cuda:3" if torch.cuda.is_available() else "cpu")) #1234
+    parser.add_argument("--ep1",type=torch.tensor,default=torch.tensor([[1e-2]],device="cuda:3" if torch.cuda.is_available() else "cpu")) #1234
     return parser.parse_args()
 
-def pre_train(data_x, data_y, loss_fn, args):
-    Expert1= Expert(args.input_size, args.hidden_size, args.output_size, args.depth).to(args.device)
-    expert1_index= data_x[:,0]<0
-    data_x1=data_x[expert1_index,:]
-    data_y1=data_y[expert1_index,:]
-    optimizer = get_optimizer(args.optim, Expert1.parameters(), lr=args.lr)
-    Expert1, _=train_loop(data_x1, data_y1, Expert1,loss_fn, optimizer, args,args.opt_steps,moe_training=False)
-    
-    
-    Expert2= Expert(args.input_size, args.hidden_size, args.output_size, args.depth).to(args.device)
-    expert2_index= data_x[:,0]>=0
-    data_x2=data_x[expert2_index,:]
-    data_y2=data_y[expert2_index,:]
-    optimizer = get_optimizer(args.optim, Expert2.parameters(), lr=args.lr)
-    Expert2,_=train_loop(data_x2, data_y2, Expert2,loss_fn, optimizer, args,args.opt_steps,moe_training=False)
-    torch.save(Expert1.state_dict(), f"/home/zhy/Zhou/mixture_of_experts/_fun_run/saved_model/pretrained_expert1.pth")
-    torch.save(Expert2.state_dict(), f"/home/zhy/Zhou/mixture_of_experts/_fun_run/saved_model/pretrained_expert2.pth")
-    
-    
-def load_model(args,model):
-    Expert1= Expert(args.input_size, args.hidden_size, args.output_size, args.depth).to(args.device)
-    Expert1.load_state_dict(torch.load(f"/home/zhy/Zhou/mixture_of_experts/_fun_run/saved_model/pretrained_expert1.pth"))
-    Expert2= Expert(args.input_size, args.hidden_size, args.output_size, args.depth).to(args.device)
-    Expert2.load_state_dict(torch.load(f"/home/zhy/Zhou/mixture_of_experts/_fun_run/saved_model/pretrained_expert2.pth"))
-    model.model.experts[0]=Expert1
-    print("Loaded pretrained Expert 1",Expert1)
-    model.model.experts[1]=Expert2
-    print("Loaded pretrained Expert 2",Expert2)
+
     
 def piecewise_hard(x: torch.Tensor):
     
     y = torch.empty_like(x, dtype=torch.float64)
 
     # 1) 振荡段
-    m1 = (x >= -1.0) & (x < -0.1) # 0-0.1
-    # y[m1] = -torch.sin(5*np.pi*x[m1])
-    y[m1] = -1/np.abs(x[m1]-1)*torch.cos(5*np.pi*x[m1])
+    m1 = (x >= -1.0) & (x < 0.1) # 0-0.1
+    # y[m1] = 1/2*torch.cos(1*np.pi*x[m1])+1/2
+    y[m1] = torch.cos(2*np.pi*x[m1])
+    # y[m1] = -1/torch.abs(x[m1]-1)*torch.cos(10*np.pi*x[m1])
     # 2) 常值段（与左侧跳跃）
-    m2 = (x >= -0.1) & (x <= 1)
-    # y[m2] = torch.cos(5*np.pi*x[m2])
-    y[m2] = 1/np.abs(x[m2]+1)*torch.cos(5*np.pi*x[m2])
-
+    m2 = (x >= 0.1) & (x <= 1)
+    # y[m2] = 1/2*torch.cos(1*np.pi*x[m2])
+    # y[m2] = -1/torch.abs(x[m2]+1)*torch.cos(5*np.pi*x[m2])
+    # m3 = (x >= 0.3) & (x <= 1)
+    y[m2] = torch.cos(5*np.pi*x[m2])
+    # y[m3] = 1/np.abs(x[m3]+1)*torch.sin(2*np.pi*x[m3])
     return y
 def plot_dual_axis(loss: np.ndarray, rank: np.ndarray, step: int,name):
     z = np.arange(1, step + 1)
@@ -155,15 +134,16 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
             if model.moe.smooth and step_count<=0:
                 model.moe.smoothing(step,args.smooth_lb)
                 step_count=args.smooth_steps
-                # for p in model.moe.experts.parameters():
-                #     p.requires_grad = False
+                # for p in model.moe.gating_network.parameters():
+                #     p.requires_grad = True
             elif step_count<=0 :
                 with torch.no_grad(): #0.08
                     model.moe.alpha2.copy_(torch.log(torch.tensor([0.07], device=x.device)))
+                # print("tau2 before smooth:",model.moe.tau2)
                 model.moe.smoothing(step,args.smooth_lb)
-                step_count=args.smooth_steps/args.smooth_steps
-                # for p in model.moe.experts.parameters():
-                #     p.requires_grad = True
+                step_count=int(args.smooth_steps/10)
+                # for p in model.moe.gating_network.parameters():
+                #     p.requires_grad = False
                 
         if moe_training:
             y_hat, aux_loss = model(x)
@@ -173,8 +153,8 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
         loss = loss_fn(y_hat, y)
         # combine lossesss
         if moe_training:
-            lambda_l2 = 1e-1#1e-6
-            reg = lambda_l2 * (1/(model.moe.tau2)).sum()
+            lambda_l2 = 1#1e-6
+            reg = lambda_l2 * (1/(model.moe.tau2)**2).sum()
             # reg=lambda_l2 *(((model.moe.tau1*model.moe.tau2))).sum()
             if model.moe.smooth:
                 total_loss = loss + aux_loss+reg
@@ -186,7 +166,7 @@ def train_loop(x, y, model,loss_fn, optim, args,steps=100,moe_training=True):
         total_loss.backward() 
         optim.step()
         scheduler.step()
-        if step % 100 == 0 or step == steps - 1:
+        if step % 200 == 0 or step == steps - 1:
             print(f"Step {step+1}/{steps} - loss: {loss.item():.8f}- reg: {reg.item():.8f}")
             print("model.moe.tau1:",model.moe.tau1.detach().cpu().numpy())
             print("model.moe.tau2:",model.moe.tau2.detach().cpu().numpy())
@@ -207,8 +187,7 @@ def eval_model(x, y, model, loss_fn,moe_training=True,args=None):
         total_loss = loss + aux_loss
         y_ep,_ =model(args.ep)
         y_ep1 ,_ =model(args.ep1)
-        print("MoE_Model Evaluation Results - loss: {:.12f}, aux_loss: {:.12f}, max error: {:.10f}".format(loss.item(), aux_loss.item(), torch.abs(y_ep- torch.cos(5*np.pi*args.ep)).item()))
-        print("error <0: {:.12f}".format(torch.abs(y_ep1+ torch.sin(5*np.pi*args.ep1)).item()))
+        print("MoE_Model Evaluation Results - loss: {:.12f}, aux_loss: {:.12f}, max error+: {:.10f},error-: {:.12f}".format(loss.item(), aux_loss.item(), torch.abs(y_ep-piecewise_hard(args.ep)).item(),torch.abs(y_ep1-piecewise_hard(args.ep1)).item()))
     else:
         loss=loss
         print("MLP_Model Evaluation Results - loss: {:.12f}, max error: {:.10f}".format(loss.item(),torch.abs(model(args.ep)- torch.cos(5*np.pi*args.ep)).item()))
@@ -251,9 +230,17 @@ def eval_model(x, y, model, loss_fn,moe_training=True,args=None):
 
         fig.tight_layout()
         plt.savefig(f"experts_functions2.png")  # 保存图像
+        plt.savefig(f"figure/soft_1D_{args.fig_index}.png")
+        args.fig_index+=1
         plt.show()
 
+def save_gif(args):
 
+
+    images = []
+    for step in range (args.fig_index):
+            images.append(imageio.imread(f"figure/soft_1D_{step}.png"))  
+    imageio.mimsave('soft_1D.gif', images, fps=5)
 
 def main():
     args=parse_args()
@@ -263,25 +250,18 @@ def main():
     print(f"data_x shape: {data_x.shape},data_y shape: {data_y.shape} ")
     loss_fn =get_loss_fn(args.lossfn)
     
-    #%%
-    # pre_train(data_x, data_y, loss_fn, args)
+
     args.data_x, args.data_y=data_x, data_y
     train_index = (data_x[:, 0] <= 0) | (data_x[:, 0] > 0)
     data_x_test=data_x[train_index,:]
     data_y_test=data_y[train_index,:]
     model_moe=MOE_modify_betap(args.input_size, args.num_experts,args.hidden_size,args.depth+1, args.output_size,args.k,args.loss_coef).to(args.device)
-    # load_model(args, model_moe)
-    
-    # for p in model_moe.model.experts.parameters():
-    #     p.requires_grad = False
-    # for p in model_moe.model.gating_network.parameters():
-    #     p.requires_grad = True
 
     optimizer = get_optimizer(args.optim,model_moe.parameters(), lr=args.lr)
     model,total_loss_list_moe=train_loop(data_x_test, data_y_test, model_moe,loss_fn, optimizer, args,args.opt_steps_gate)
     eval_model(args.data_x, args.data_y, model, loss_fn,moe_training=True,args=args)
     plot_dual_axis(np.array(total_loss_list_moe),None,args.opt_steps_gate,"moe_fixed")
-
+    save_gif(args)
 
     
     #%%

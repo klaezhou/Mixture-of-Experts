@@ -53,13 +53,15 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
     for step in range(steps): 
         if moe_training :
             step_count -=1
-            smooth_loop=step #%20000
             if model.moe.smooth and step_count<=0:
-                model.moe.smoothing(smooth_loop,args.smooth_lb)
+                model.moe.smoothing(step,args.smooth_lb)
                 step_count=args.smooth_steps
+
             elif step_count<=0 :
-                model.moe.smoothing(smooth_loop,args.smooth_lb)
-                step_count=args.smooth_steps
+                with torch.no_grad(): #0.08
+                    model.moe.alpha2.copy_(torch.log(torch.tensor([0.08], device=args.device)))
+                model.moe.smoothing(step,args.smooth_lb)
+                step_count=args.smooth_steps/args.smooth_steps
             
             
         if step % 500 == 0:
@@ -91,10 +93,13 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
         f_loss = loss_fn(f_residual, torch.zeros_like(f_residual))
         # lambda_l2 = 1e-4 #1e-6
         # reg = lambda_l2 * (((1/model.moe.tau1) ** 2).sum() + ((1/model.moe.tau2 )** 2).sum())
+        if moe_training:
+            lambda_l2 = 1e-1#1e-6
+            reg = lambda_l2 * (1/(model.moe.tau2)).sum()
         loss = args.loss_coef_init *init_loss + args.loss_coef_bnd * bnd_loss + f_loss
 
         # combine loss
-        if moe_training:total_loss = loss + aux_loss
+        if moe_training:total_loss = loss + aux_loss+reg
         else: total_loss = loss
         total_loss_list.append(total_loss.item())
         total_loss.backward()
@@ -159,30 +164,7 @@ def train_loop(X_init, X_bnd, X_f, X_total, u_init, model,loss_fn, optim, args,s
         
         if step % 100 == 0 :
             eval_model(step,X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_training,args,writer)
-        # if step % 100 == 0 or step == steps - 1:
-            # if moe_training:
-            #     # rank_moe=epi_rank_moe(model,args.interval,args.integral_sample)
-            #     # rank=rank_moe.rank_moe()
-                
-            #     # rank_mlp=epi_rank_mlp(model,args.x_integral_interval,args.t_integral_interval,args.x_integral_sample, args.t_integral_sample, args.epsilon,moe_training=True,index=1)
-            #     # rank_list=rank_mlp.rank_mlp()
-            #     # total_rank_list.append(rank_list[args.plt_r])
-            #     # rank_list_experts=rank_mlp.experts_rank_mlp()
-            #     # tqdm.write(f"Step {step+1}/{steps+args.lbfgs_steps} - loss: {loss_lbfgs.item():.8f} -rank: {rank_list} \
-            #     #     -experts_rank: {rank_list_experts[:-2]} -total_experts_rank: {rank_list_experts[-2]} -useless_expert_rank: {rank_list_experts[-1]}")
-            #     # writer.add_scalar('MoE_Loss', total_loss.item(), step)
-            #     # writer.add_scalar('Aux_Loss', aux_loss.item(), step)
-            #     # writer.add_scalar('MoE_Rank', rank_list[args.plt_r], step)
-            #     # writer.add_scalar('Useless_Expert_Rank', rank_list_experts[-1], step)
-            #     # total_useless_expert_rank.append(rank_list_experts[-1])
-            # else:
-            #     rank_mlp=epi_rank_mlp(model,args.x_integral_interval,args.t_integral_interval,args.x_integral_sample, args.t_integral_sample,args.epsilon, moe_training=False,index=1)
-            #     rank=rank_mlp.rank_mlp()
-            #     total_rank_list.append(rank[args.plt_r])
-            #     tqdm.write(f"Step {step+1}/{steps+args.lbfgs_steps} - loss: {loss_lbfgs.item():.8f} -rank: {rank}")
-            #     writer.add_scalar('MLP_Loss', total_loss.item(), step)
-        
-    
+
         # 
     if moe_training: save_model(model,'moe') 
     else:  save_model(model,'mlp')
@@ -262,16 +244,12 @@ def eval_model(step,X_init, X_bnd, X_f, X_total, u_init, model, loss_fn,moe_trai
         
     else:
         u_test=model(args.X_test) 
-        # print('u_test shape',u_test.shape)
-        # print('args.gt shape',args.gt.shape)
         u_error = torch.abs(u_test- args.gt)
     rell2=torch.norm(u_error.detach(),p=2) / torch.norm(args.gt.detach(),p=2)
     tqdm.write(f"L2 absolute error: {rell2.item():.8f}")
     if moe_training:
-        # np.save("l2_moe.npy", np.array(rell2.detach().cpu().numpy()))
         writer.add_scalar('MoE_L2_Error', rell2.item(), step)
     else:
-        # np.save("l2_mlp.npy", np.array(rell2.detach().cpu().numpy()))
         writer.add_scalar('MLP_L2_Error', rell2.item(), step)
     
     x = args.X_test[:, 0].detach().cpu().numpy()
