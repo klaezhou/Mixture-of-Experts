@@ -3,9 +3,9 @@
 import torch 
 import torch.nn as nn
 import torch.nn.init as init
-from test_rank.model.moe_d import MOE_dense
-from test_rank.train.trainer import trainer
-from test_rank.data.data_loader import Dataloader
+from model.moe_d import MOE_dense
+from train.trainer import Trainer
+from data.data_loader import DataLoader
 
 
 
@@ -24,7 +24,7 @@ class Pipeline:
         - Subclasses: e.g., Poisson, Burgers (Implement specific physics)
         - Subclass Overrides: Must implement 'get_data', 'compute_loss'
     """
-    def __init__(self, args, equation):
+    def __init__(self, args, equation,callbacks=None):
         self.args = args
         self.eq = equation  # BaseEquation Instance from Equation/_base.py
         
@@ -32,6 +32,7 @@ class Pipeline:
         self._trainer = None
         self._data_loader = None
         self._data = None 
+        self.callbacks=callbacks or []
         
         
     @property
@@ -39,7 +40,11 @@ class Pipeline:
         """load model lazily"""
         if self._model is None:
             print("[Pipeline] build model...")
+            #model(args)
             self._model = MOE_dense(self.args).to(self.args.device)
+        if getattr(self.args, "use_double", False):
+            self._model = self._model.double()
+
         return self._model
 
 
@@ -48,7 +53,7 @@ class Pipeline:
         if self._trainer is None:
             print("[Pipeline] Building trainer...")
             # Passing self.eq to trainer allows the trainer to access polymorphic loss functions
-            self._trainer = trainer(self.model, self.eq, self.args)
+            self._trainer = Trainer(self.model, self.eq, self.args,callbacks=self.callbacks)
         return self._trainer
 
     @property
@@ -56,7 +61,7 @@ class Pipeline:
         """load data loader lazily"""
         if self._data_loader is None:
             print("[Pipeline] build data_loader...")
-            self._data_loader = Dataloader(self.args)
+            self._data_loader = DataLoader(self.args)
         return self._data_loader
 
     @property

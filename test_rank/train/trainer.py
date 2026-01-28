@@ -1,6 +1,6 @@
 import torch
 import torch.optim as optim
-
+from viz.callbacks import Callback
 class Trainer:
     """
     Trainer Module:
@@ -8,7 +8,7 @@ class Trainer:
     1) Orchestrates the training loop using the injected model and equation.
     2) Polymorphism: calls eq.compute_loss(model, batch) regardless of PDE type.
     """
-    def __init__(self, model, equation, args):
+    def __init__(self, model, equation, args,callbacks=None):
         self.model = model
         self.eq = equation
         self.args = args
@@ -19,9 +19,12 @@ class Trainer:
         self.use_scheduler = getattr(self.args, "use_scheduler", True)
         self.scheduler = optim.lr_scheduler.StepLR(
             self.optimizer,
-            step_size=getattr(self.args, "lr_step_size", 1000),
-            gamma=getattr(self.args, "lr_gamma", 0.5)
+            step_size=getattr(self.args, "lr_step_size", 5000),
+            gamma=getattr(self.args, "lr_gamma", 0.7)
         )
+        
+        self.callbacks = callbacks or []
+        self.l_history = []   # plot loss curve
 
     def train_step(self, data):
         """
@@ -58,15 +61,27 @@ class Trainer:
 
     def train(self, data, epochs):
         self.model.train()
+        
+        # (1) train begin
+        for cb in self.callbacks:
+            cb.on_train_begin(self)
 
         log_freq = getattr(self.args, "log_freq", 200)
         for epoch in range(epochs):
+             # losses is  log_losses which is a dict e.g. {"total":..., "pde":..., "bc":...}  defined in eq.compute_loss
             losses = self.train_step(data)
 
             # epoch is 0-based; print at 1-based step
             it = epoch + 1
             if it % log_freq == 0:
                 self._print_log(it, losses)
+            # (2) iter end
+            for cb in self.callbacks:
+                cb.on_iter_end(self, it, losses)
+                
+        # (3) train end
+        for cb in self.callbacks:
+            cb.on_train_end(self)
 
     def _print_log(self, it, losses):
         """print training log"""
@@ -74,7 +89,7 @@ class Trainer:
         if total is None:
             raise KeyError("loss dict must contain key 'total'")
 
-        log_str = f"[Iter {it:05d}] Total: {total:.6e}"
+        log_str = f"[Iter {it:06d}] Total: {total:.6e}"
 
         for k in sorted(losses.keys()):
             if k == "total":

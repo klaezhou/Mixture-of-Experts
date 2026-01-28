@@ -1,0 +1,9 @@
+# viz/callbacks.py
+from __future__ import annotations
+from typing import Dict, Any
+
+class Callback:
+    # The input type of the subclass must be consistent with that of the superclass
+    def on_train_begin(self, trainer): ...
+    def on_iter_end(self, trainer, it: int, loss_dict: Dict[str, float]): ...
+    def on_train_end(self, trainer): ...

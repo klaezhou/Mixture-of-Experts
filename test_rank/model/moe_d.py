@@ -1,5 +1,5 @@
 # =============================================================================
-# Mixture of Experts Module for Functional Approximation
+# Mixture of Experts Module for Function Approximation
 
 # moe with dense gates, 
 
@@ -13,7 +13,6 @@ import torch.nn.functional as F
 import logging
 import torch.nn.init as init
 
-torch.set_default_dtype(torch.float64)
 
     
 class Expert(nn.Module):
@@ -34,7 +33,28 @@ class Expert(nn.Module):
             layer_list.append(nn.Linear(hidden_size,hidden_size))  #[H,H]
         layer_list.append(nn.Linear(hidden_size,output_size))  #[H,I] 
         self.net = nn.ModuleList(layer_list)
-    
+        
+        self._report_trainable()
+        
+    def _report_trainable(self):
+            total = 0
+            print("=== MOE Trainable parameters ===")
+            for name, p in self.named_parameters():
+                if p.requires_grad:
+                    n = p.numel()
+                    total += n
+            print(f"MOE trainable params: {total}")
+        
+    @torch.no_grad()
+    def forward_penultimate(self, x):
+        """
+        Return the activation after the last hidden layer (before final linear).
+        Shape: [N, hidden_size]
+        """
+        y = x
+        for layer in self.net[:-1]:
+            y = self.activation(layer(y))
+        return y
     def forward(self, y):
         for i, layer in enumerate(self.net[:-1]):
             y = layer(y)
@@ -61,7 +81,7 @@ class Gating(nn.Module):
             layer_list.append(nn.Linear(gating_hidden_size,gating_hidden_size))  #[H,H]
         layer_list.append(nn.Linear(gating_hidden_size,num_experts))  #[H,E] 
         self.net = nn.ModuleList(layer_list)
-                
+        self.softmax = nn.Softmax(dim=-1)
         # self.udi_init(self.net[0], gamma, R)
         # self.net[0].udi_initialized = True
     def udi_init(self, layer, gamma, R):
@@ -73,14 +93,23 @@ class Gating(nn.Module):
             layer.weight.data = gamma * weight
             # 偏置均匀分布在 [0, R]
             layer.bias.data.uniform_(0.0, R)
-
+    
+    @torch.no_grad()
+    def forward_int(self, y):
+        #for integration
+        for i, layer in enumerate(self.net[:-1]):
+            y = layer(y)
+            y = self.activation(y)
+        y = self.net[-1](y)
+        y= self.softmax(y)
+        return y
+    
     def forward(self,y):
         for i, layer in enumerate(self.net[:-1]):
             y = layer(y)
             y = self.activation(y)
         y = self.net[-1](y)
-
-        
+        y= self.softmax(y)
         return y
         
     
@@ -108,75 +137,59 @@ class MoE(nn.Module):
         self.register_buffer("mean", torch.tensor([0.0]))
         self.register_buffer("std", torch.tensor([1.0]))
         self.gates_check=None
-        self.softmax = nn.Softmax(dim=-1)
+        
         self.gating_network = Gating(self.input_size,self.num_experts,self.gating_hidden_size,self.gating_depth)
     
-        self.report_trainable()
-    def report_trainable(self):
-            total = 0
-            print("=== MoE Trainable parameters ===")
-            for name, p in self.named_parameters():
-                if p.requires_grad:
-                    n = p.numel()
-                    total += n
-            print(f"Total trainable params: {total}\n")
 
     def forward(self,x):
         gates=self.gating_network(x)
-        
-        gates= self.softmax(gates)
         expert_outputs = torch.stack([expert(x) for expert in self.experts], dim=1)  # Shape: (batch_size, num_experts, output_size)
         
-        self.gates_check=gates
-        gates=gates.unsqueeze(-1)  # Shape: (batch_size, num_experts, 1)
-        y=gates*expert_outputs
+        self.gates_check=gates.detach()
+        y = (gates.unsqueeze(-1) * expert_outputs).sum(dim=1)  # (B, out)
+
 
         return y
 
-class MLP(nn.Module):
-    def __init__(self, hidden_size,activation=nn.Tanh()):
-        super(MLP, self).__init__()
-        self.hidden_size = hidden_size
-        self.model = nn.Sequential(
-            nn.Linear(self.hidden_size, hidden_size),
-            activation
-        )
-        self._init_weights()
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                init.xavier_normal_(m.weight)  # Xavier 正态分布初始化
-                if m.bias is not None:
-                    init.zeros_(m.bias)
 
-    def forward(self, x):
-        x = self.model(x)
-        return x
 
-    
 class MOE_dense(nn.Module):   
-    def __init__(self,args):
-        super(MOE_dense, self).__init__()
-        self.input_size = args.input_size
-        self.num_experts = args.num_experts
-        self.hidden_size = args.hidden_size
-        self.depth = args.depth
-        self.output_size = args.output_size
-        self.activation=nn.Tanh()
-            # === 1️⃣ MoE 网络 ===
-        self.moe=MoE(input_size=self.input_size,
-                     num_experts=self.num_experts,
-                     hidden_size=self.hidden_size,
-                     depth=self.depth,
-                     output_size=self.output_size,
-                    gating_hidden_size=args.gating_hidden_size,
-                    gating_depth=args.gating_depth,
-                    activation=self.activation)
-        self.model=self.moe
-        
+    def __init__(self, args):
+        super().__init__()
+
+        def _get(name, default):
+            return getattr(args, name, default)
+
+        # ---- infer sizes (very handy for PDE) ----
+        # For 2D Poisson: input_size=2, output_size=1
+        self.input_size  = _get("input_size", 2)
+        self.output_size = _get("output_size", 1)
+
+        # ---- MoE config with defaults ----
+        self.num_experts = _get("num_experts", 4)
+        self.hidden_size = _get("hidden_size", 20)
+        self.depth       = _get("depth", 3)
+
+        self.gating_hidden_size = _get("gating_hidden_size", 10)
+        self.gating_depth       = _get("gating_depth", 2)
+
+        self.activation = nn.Tanh()
+
+        self.moe = MoE(
+            input_size=self.input_size,
+            num_experts=self.num_experts,
+            hidden_size=self.hidden_size,
+            depth=self.depth,
+            output_size=self.output_size,
+            gating_hidden_size=self.gating_hidden_size,
+            gating_depth=self.gating_depth,
+            activation=self.activation
+        )
+
+        self.model = self.moe
+
         self._init_weights()
         self._report_trainable()
-        
         
     def _report_trainable(self):
             total = 0
@@ -185,7 +198,7 @@ class MOE_dense(nn.Module):
                 if p.requires_grad:
                     n = p.numel()
                     total += n
-            print(f"Total trainable params: {total}\n")
+            print(f"Total trainable params: {total}")
         
     def _init_weights(self):
         import torch.nn.init as init
@@ -200,3 +213,25 @@ class MOE_dense(nn.Module):
     def forward(self, x):
         output=self.model(x)
         return output
+    
+
+
+
+@torch.no_grad()
+def moe_penultimate_getter(model, x):
+    """
+    Feature getter
+    This function are used for model is a MOE_dense instance.
+    Phi = concat over experts of penultimate hidden activations.
+    Returns: Phi [N, num_experts * hidden_size]
+    """
+    moe = model.model  # MOE_dense: self.model = self.moe
+    feats = []
+    g= moe.gating_network.forward_int(x)  # [N, E]
+    for e, expert in enumerate(moe.experts):
+        h = expert.forward_penultimate(x)           # [N, H]
+        h = h * g[:, e:e+1]                         # [N, H], broadcast weight
+        feats.append(h)
+
+    Phi = torch.cat(feats, dim=1)          # [N, E*H]
+    return Phi

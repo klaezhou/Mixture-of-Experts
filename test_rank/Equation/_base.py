@@ -26,5 +26,33 @@ class BaseEquation:
         """
         pass
 
+    @abstractmethod
+    def exact_solution(self, x):
+        """
+        x: [N, dim]
+        return: [N, 1]
+        """
+        pass
+    @abstractmethod
+    def plot_error(self, model, it: int, save_dir: str):
+        """
+        Optional hook for visualization during training.
+        Each equation can override this method to plot in its own way.
+        """
+        pass
     
+    @abstractmethod
+    def plot_ground_truth(self,save_dir: str):
+        """
+        Optional hook for plotting ground truth solution.
+        Each equation can override this method to plot in its own way.
+        """
+        pass
     
+    @abstractmethod
+    def plot_u(self, model, save_dir: str):
+        """
+        Optional hook for plotting predicted solution.
+        Each equation can override this method to plot in its own way.
+        """
+        pass
