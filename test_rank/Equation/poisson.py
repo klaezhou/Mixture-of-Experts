@@ -20,7 +20,7 @@ class PoissonEquation(BaseEquation):
 
         x1 = x[:, 0:1]
         x2 = x[:, 1:2]
-        return (5*math.pi**2) * torch.sin(2*math.pi * x1) * torch.sin(1*math.pi * x2)
+        return (17*math.pi**2) * torch.sin(4*math.pi * x1) * torch.sin(1*math.pi * x2)
 
     def g(self, x):
         """
@@ -113,7 +113,7 @@ class PoissonEquation(BaseEquation):
     
     def exact_solution(self, x):
             """return exact solution at x for error analysis"""
-            return torch.sin(2*torch.pi * x[:, 0:1]) * torch.sin(1*torch.pi * x[:, 1:2])
+            return torch.sin(4*torch.pi * x[:, 0:1]) * torch.sin(1*torch.pi * x[:, 1:2])
         
     @torch.no_grad()
     def plot_error(self, model, it: int, save_dir: str):

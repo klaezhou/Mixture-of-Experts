@@ -4,10 +4,12 @@ import matplotlib.pyplot as plt
 from viz.callbacks import Callback
 
 class LossPlotCallback(Callback):
-    def __init__(self, args,  freq=500):
+    def __init__(self, args,  freq_dict={"adam":5,"lbfgs":1}):
+        super().__init__()
         self.args = args
         self.save_dir =  args.save_dir
-        self.freq = freq
+        self.freq_dict = freq_dict
+        self.freq = None
         os.makedirs(self.save_dir, exist_ok=True)
 
         self.iters = []
@@ -25,6 +27,9 @@ class LossPlotCallback(Callback):
         if it % self.freq != 0:
             return
         self._save_plot(it)
+        
+    def on_train_end(self, trainer):
+        self._save_plot(self.iters[-1])
 
     def _save_plot(self, it: int):
         plt.figure()
@@ -41,3 +46,8 @@ class LossPlotCallback(Callback):
         out_path = os.path.join(self.save_dir, "loss_curve.png")
         plt.savefig(out_path, dpi=150)
         plt.close()
+        
+    def on_phase_begin(self, trainer, phase: str):
+        if phase not in ("adam", "lbfgs"):
+            print(f"[Warning] Unknown phase '{phase}', using base freq.")
+        self.freq = self.freq_dict.get(phase, self._base_freq)

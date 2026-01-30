@@ -33,7 +33,7 @@ class Expert(nn.Module):
             layer_list.append(nn.Linear(hidden_size,hidden_size))  #[H,H]
         layer_list.append(nn.Linear(hidden_size,output_size))  #[H,I] 
         self.net = nn.ModuleList(layer_list)
-        
+        self.udi_init(self.net[0])
         self._report_trainable()
         
     def _report_trainable(self):
@@ -45,6 +45,16 @@ class Expert(nn.Module):
                     total += n
             print(f"MOE trainable params: {total}")
         
+    def udi_init(self, layer, gamma=1, R=1):
+            # 取出层参数
+            weight = torch.randn_like(layer.weight)  # 随机方向
+            # 每一行归一化到单位球面（a_j）
+            weight = F.normalize(weight, p=2, dim=1)
+            # 可选缩放 γ
+            layer.weight.data = gamma * weight
+            # 偏置均匀分布在 [0, R]
+            layer.bias.data.uniform_(0.0, R)
+            layer.udi_initialized = True
     @torch.no_grad()
     def forward_penultimate(self, x):
         """
@@ -72,7 +82,7 @@ class Gating(nn.Module):
     - num_experts (int): The number of experts.
     - noise_epsilon (float): The noise epsilon value. default is 1e-4.
     """
-    def __init__(self,input_size,num_experts,gating_hidden_size,gating_depth,activation=nn.Tanh(),gamma=2,R=2):
+    def __init__(self,input_size,num_experts,gating_hidden_size,gating_depth,activation=nn.Tanh(),gamma=1,R=2):
         super(Gating, self).__init__()
         self.activation=activation
         layer_list = []
@@ -83,7 +93,6 @@ class Gating(nn.Module):
         self.net = nn.ModuleList(layer_list)
         self.softmax = nn.Softmax(dim=-1)
         # self.udi_init(self.net[0], gamma, R)
-        # self.net[0].udi_initialized = True
     def udi_init(self, layer, gamma, R):
             # 取出层参数
             weight = torch.randn_like(layer.weight)  # 随机方向
@@ -93,6 +102,7 @@ class Gating(nn.Module):
             layer.weight.data = gamma * weight
             # 偏置均匀分布在 [0, R]
             layer.bias.data.uniform_(0.0, R)
+            layer.udi_initialized = True
     
     @torch.no_grad()
     def forward_int(self, y):

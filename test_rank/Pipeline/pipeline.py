@@ -3,7 +3,7 @@
 import torch 
 import torch.nn as nn
 import torch.nn.init as init
-from model.moe_d import MOE_dense
+from model.factory import get_model
 from train.trainer import Trainer
 from data.data_loader import DataLoader
 
@@ -33,6 +33,10 @@ class Pipeline:
         self._data_loader = None
         self._data = None 
         self.callbacks=callbacks or []
+        self.seed=args.seed
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
         
         
     @property
@@ -41,7 +45,7 @@ class Pipeline:
         if self._model is None:
             print("[Pipeline] build model...")
             #model(args)
-            self._model = MOE_dense(self.args).to(self.args.device)
+            self._model =get_model(self.args).to(self.args.device)
         if getattr(self.args, "use_double", False):
             self._model = self._model.double()
 

@@ -84,7 +84,7 @@ def epsilon_rank_model_2d_trapz(
 
     # 2) neuron features
     Phi = feature_getter(model, x_grid)  # [N, m]
-    Phi = Phi - Phi.mean(dim=0, keepdim=True)
+    # Phi = Phi - Phi.mean(dim=0, keepdim=True)  # zero-mean features
 
     N, m = Phi.shape
     if N != nx * ny:
