@@ -18,7 +18,7 @@ python main.py --eq poisson --model moe_d --iters 1000
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--eq` | `str` | `poisson` | Equation name (e.g., poisson, burgers). |
+| `--eq` | `str` | `poisson` | Equation name (e.g., poisson,ac). |
 | `--device` | `str` | `cuda:5` | Target device for computation. |
 | `--model` | `str` | `moe_d` | Model architecture (`moe_d`, `mlp`, etc.). |
 | `--seed` | `int` | `2026` | Random seed for reproducibility. |

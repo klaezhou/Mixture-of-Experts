@@ -1,5 +1,6 @@
 # viz/error_plot_callback.py
 import os
+from model.moe_d import MOE_dense
 from viz.callbacks import Callback
 
 class ErrorPlotCallback(Callback):
@@ -16,6 +17,9 @@ class ErrorPlotCallback(Callback):
         if it % self.freq != 0:
             return
         self.eq.plot_error(trainer.model, it, self.save_dir)
+        if isinstance(trainer.model, MOE_dense):
+            self.eq.plot_gate(trainer.model, it, self.save_dir)
+
         
     def on_train_begin(self, trainer):
         self.eq.plot_ground_truth( self.save_dir)

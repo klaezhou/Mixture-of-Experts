@@ -13,8 +13,10 @@ class RankCallback(Callback):
         self.feature_getter = feature_getter
         self.nx= getattr(args, "int_grid_n", 200)
         self.ny= getattr(args, "int_grid_n", 200)
-        self.low= getattr(args, "int_domain_low", -1.0)
-        self.high= getattr(args, "int_domain_high", 1.0)
+        self.lowx= getattr(args, "int_domain_lowx", -1.0)
+        self.highx= getattr(args, "int_domain_highx", 1.0)
+        self.lowy= getattr(args, "int_domain_lowy", -1.0)
+        self.highy= getattr(args, "int_domain_highy", 1.0)
         self.eps= getattr(args, "eps", 1e-3)     # lambda > eps 
         self.freq_dict = freq_dict
         self.freq = None
@@ -28,7 +30,7 @@ class RankCallback(Callback):
         if it % self.freq != 0:
             return
 
-        r, evals = epsilon_rank_model_2d_trapz(trainer.model, self.feature_getter,self.nx,self.ny,self.low,self.high, eps=self.eps)
+        r, evals = epsilon_rank_model_2d_trapz(trainer.model, self.feature_getter,self.nx,self.ny,self.lowx,self.highx,self.lowy,self.highy, eps=self.eps)
         # features_getter: model, x_grid -> Phi [N,m]
 
         self.iters.append(it)
@@ -39,7 +41,7 @@ class RankCallback(Callback):
         print(f"[Rank] iter={it} rank={r}")
     
     def on_train_end(self, trainer):
-        r, evals = epsilon_rank_model_2d_trapz(trainer.model, self.feature_getter,self.nx,self.ny,self.low,self.high, eps=self.eps)
+        r, evals = epsilon_rank_model_2d_trapz(trainer.model, self.feature_getter,self.nx,self.ny,self.lowx,self.highx,self.lowy,self.highy, eps=self.eps)
         # features_getter: model, x_grid -> Phi [N,m]
 
         it=self.iters[-1]+1

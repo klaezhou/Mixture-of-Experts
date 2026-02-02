@@ -1,5 +1,6 @@
 #\Equation/factory.py
 from .poisson import PoissonEquation
+from .allen_cahn import AllenCahnEquation
 # from .burgers import BurgersEquation 
 
 def get_equation(args):
@@ -8,7 +9,7 @@ def get_equation(args):
     """
     mapping = {
         "poisson": PoissonEquation,
-        # "burgers": BurgersEquation,
+         "ac" : AllenCahnEquation,
     }
     target_class = mapping.get(args.eq.lower())
     if not target_class:

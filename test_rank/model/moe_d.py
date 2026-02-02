@@ -33,7 +33,8 @@ class Expert(nn.Module):
             layer_list.append(nn.Linear(hidden_size,hidden_size))  #[H,H]
         layer_list.append(nn.Linear(hidden_size,output_size))  #[H,I] 
         self.net = nn.ModuleList(layer_list)
-        self.udi_init(self.net[0])
+        # for layer in self.net:
+        #     self.udi_init(layer)
         self._report_trainable()
         
     def _report_trainable(self):
@@ -111,7 +112,7 @@ class Gating(nn.Module):
             y = layer(y)
             y = self.activation(y)
         y = self.net[-1](y)
-        y= self.softmax(y)
+        # y= self.softmax(y)
         return y
     
     def forward(self,y):
@@ -119,7 +120,7 @@ class Gating(nn.Module):
             y = layer(y)
             y = self.activation(y)
         y = self.net[-1](y)
-        y= self.softmax(y)
+        # y= self.softmax(y)
         return y
         
     

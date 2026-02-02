@@ -20,7 +20,7 @@ class PoissonEquation(BaseEquation):
 
         x1 = x[:, 0:1]
         x2 = x[:, 1:2]
-        return (17*math.pi**2) * torch.sin(4*math.pi * x1) * torch.sin(1*math.pi * x2)
+        return (34*math.pi**2) * torch.sin(5*math.pi * x1) * torch.sin(3*math.pi * x2)
 
     def g(self, x):
         """
@@ -113,7 +113,7 @@ class PoissonEquation(BaseEquation):
     
     def exact_solution(self, x):
             """return exact solution at x for error analysis"""
-            return torch.sin(4*torch.pi * x[:, 0:1]) * torch.sin(1*torch.pi * x[:, 1:2])
+            return torch.sin(5*torch.pi * x[:, 0:1]) * torch.sin(3*torch.pi * x[:, 1:2])
         
     @torch.no_grad()
     def plot_error(self, model, it: int, save_dir: str):
@@ -309,5 +309,56 @@ class PoissonEquation(BaseEquation):
         
 
     
+    @torch.no_grad()
+    def plot_gate(self, model, it, save_dir):
+        """
+        Visualize MoE gate distribution on a 2D grid.
+        One subplot per expert.
+        """
+        # ---- basic config ----
+        grid_n = getattr(self.args, "eval_grid_n", 200)
+        low = getattr(self.args, "domain_low", -1.0)
+        high = getattr(self.args, "domain_high", 1.0)
+
+        device = next(model.parameters()).device
+        dtype = next(model.parameters()).dtype
+
+        # ---- build grid ----
+        xs = torch.linspace(low, high, steps=grid_n, device=device, dtype=dtype)
+        ys = torch.linspace(low, high, steps=grid_n, device=device, dtype=dtype)
+        X, Y = torch.meshgrid(xs, ys, indexing="ij")
+        grid_xy = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=1)  # [N,2]
+
+        # ---- compute gate ----
+        moe = model.model  # MOE_dense: self.model = self.moe
+        with torch.no_grad():
+            gates = moe.gating_network(grid_xy)     # [N, E]   
+
+        E = gates.shape[1]
+
+        # ---- plot ----
+        fig, axes = plt.subplots(1, E, figsize=(4 * E, 4), squeeze=False)
+
+        for e in range(E):
+            gate_e = gates[:, e].reshape(grid_n, grid_n).cpu().numpy()
+            ax = axes[0, e]
+            im = ax.imshow(
+                gate_e,
+                origin="lower",
+                extent=[low, high, low, high],
+                cmap="viridis",
+            )
+            ax.set_title(f"Gate {e}")
+            fig.colorbar(im, ax=ax, fraction=0.046)
+
+        fig.suptitle(f"MoE Gate Distribution (iter={it})")
+        plt.tight_layout()
+
+        # ---- save ----
+        out_dir = save_dir
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, f"gate.png")
+        plt.savefig(out_path, dpi=150)
+        plt.close(fig)
 
 

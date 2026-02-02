@@ -12,7 +12,7 @@
 import torch
 
 
-def make_grid_2d(nx: int, ny: int, low: float, high: float, device=None, dtype=None):
+def make_grid_2d(nx: int, ny: int, lowx: float, highx: float, lowy: float, highy: float, device=None, dtype=None):
     """
     Create a 2D tensor grid and flatten it.
 
@@ -20,26 +20,24 @@ def make_grid_2d(nx: int, ny: int, low: float, high: float, device=None, dtype=N
         x_grid: [N, 2] with N = nx * ny
         X, Y:   [nx, ny] meshgrid (CPU/GPU consistent)
     """
-    xs = torch.linspace(low, high, steps=nx, device=device, dtype=dtype)
-    ys = torch.linspace(low, high, steps=ny, device=device, dtype=dtype)
-
+    xs = torch.linspace(lowx, highx, steps=nx, device=device, dtype=dtype)
+    ys = torch.linspace(lowy, highy, steps=ny, device=device, dtype=dtype)
     X, Y = torch.meshgrid(xs, ys, indexing="ij")   # [nx, ny]
     x_grid = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=1)  # [N,2]
 
     return x_grid, X, Y
 
 
-def trapezoid_weights_2d(nx: int, ny: int, low: float, high: float, device=None, dtype=None):
+def trapezoid_weights_2d(nx: int, ny: int, lowx: float, highx: float, lowy: float, highy: float, device=None, dtype=None):
     """
-    2D trapezoidal rule weights on [low, high]^2.
+    2D trapezoidal rule weights on [lowx, highx] x [lowy, highy].
 
     Returns:
         w:     [N] weights
-        area:  scalar = sum(w) = (high-low)^2
+        area:  scalar = sum(w) = (highx-lowx) * (highy-lowy)
     """
-    dx = (high - low) / (nx - 1)
-    dy = (high - low) / (ny - 1)
-
+    dx = (highx - lowx) / (nx - 1)
+    dy = (highy - lowy) / (ny - 1)
     wx = torch.ones(nx, device=device, dtype=dtype)
     wy = torch.ones(ny, device=device, dtype=dtype)
     wx[0] *= 0.5
@@ -59,8 +57,10 @@ def epsilon_rank_model_2d_trapz(
     feature_getter,
     nx: int,
     ny: int,
-    low: float,
-    high: float,
+    lowx: float,
+    highx: float,
+    lowy: float,
+    highy: float,
     eps: float = 1e-3,
 ):
     """
@@ -80,7 +80,7 @@ def epsilon_rank_model_2d_trapz(
     dtype = next(model.parameters()).dtype
 
     # 1) grid
-    x_grid, _, _ = make_grid_2d(nx, ny, low, high, device=device, dtype=dtype)
+    x_grid, _, _ = make_grid_2d(nx, ny, lowx, highx, lowy, highy, device=device, dtype=dtype)
 
     # 2) neuron features
     Phi = feature_getter(model, x_grid)  # [N, m]
@@ -91,7 +91,7 @@ def epsilon_rank_model_2d_trapz(
         raise RuntimeError("Feature shape does not match grid size.")
 
     # 3) trapezoidal Gram matrix
-    w, area = trapezoid_weights_2d(nx, ny, low, high, device=device, dtype=dtype)
+    w, area = trapezoid_weights_2d(nx, ny, lowx, highx, lowy, highy, device=device, dtype=dtype)
     Phi_w = Phi * w.unsqueeze(1)          # [N, m]
     G = (Phi.T @ Phi_w) / area             # [m, m]
 

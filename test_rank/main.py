@@ -12,7 +12,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="PINNs Lightweight Solver")
     
     # --- basic config ---
-    parser.add_argument("--eq", type=str, default="poisson", help="Equation name (poisson,etc.)")
+    parser.add_argument("--eq", type=str, default="poisson", help="Equation name (poisson, ac, etc.)")
     parser.add_argument("--device", type=str, default="cuda:5")
     parser.add_argument("--model", type=str, default="moe_d", help="Model architecture (moe_d, mlp etc.)")
     parser.add_argument("--seed", type=int, default=2026)
@@ -25,22 +25,23 @@ def parse_args():
     parser.add_argument("--ny", type=int, default=100)
     parser.add_argument("--n_per_edge", type=int, default=100)
     parser.add_argument("--w_pde", type=float, default=1.0)
-    parser.add_argument("--w_bc", type=float, default=5.0)
+    parser.add_argument("--w_bc", type=float, default=20.0)
+
 
     # --- modeling ---
     parser.add_argument("--input_size", type=int, default=2)
     parser.add_argument("--output_size", type=int, default=1)
-    parser.add_argument("--num_experts", type=int, default=2)
-    parser.add_argument("--hidden_size", type=int, default=20)
-    parser.add_argument("--depth", type=int, default=2)
-    parser.add_argument("--gating_hidden_size", type=int, default=10)
+    parser.add_argument("--num_experts", type=int, default=4)
+    parser.add_argument("--hidden_size", type=int, default=5)
+    parser.add_argument("--depth", type=int, default=4)
+    parser.add_argument("--gating_hidden_size", type=int, default=4)
     parser.add_argument("--gating_depth", type=int, default=1)
     parser.add_argument("--use_double", action="store_true")
     
     # --- training ---
     parser.add_argument("--iters", type=int, default=1000)  # adam iters
     parser.add_argument("--use_lbfgs", action="store_true") # use lbfgs or not
-    parser.add_argument("--lbfgs_iter", type=int, default=500) # lbfgs iters
+    parser.add_argument("--lbfgs_iter", type=int, default=700) # lbfgs iters
     parser.add_argument("--lbfgs_lr", type=float, default=1.0) # lbfgs lr
     parser.add_argument("--lr", type=float, default=8e-3) # adam lr
     parser.add_argument("--use_scheduler", type=bool, default=True)
@@ -55,14 +56,15 @@ def parse_args():
     parser.add_argument("--plot_freq", type=dict, default={"adam": 500, "lbfgs": 50} ) # in error_plot_callback.py for plot error
     parser.add_argument("--loss_freq", type=dict, default={"adam": 5, "lbfgs": 1}) # in checkpoint_callback.py for saving model
     parser.add_argument("--eval_grid_n", type=int, default=200)
-    parser.add_argument("--domain_low", type=float, default=-1.0)
-    parser.add_argument("--domain_high", type=float, default=1.0)
     
     # --- rank callback ---
-    parser.add_argument("--rank_freq", type=dict, default={"adam": 50, "lbfgs": 5}) 
+    parser.add_argument("--rank_freq", type=dict, default={"adam": 50, "lbfgs": 30}) 
     parser.add_argument("--int_grid_n", type=int, default=200)
-    parser.add_argument("--int_domain_low", type=float, default=-1.0)
-    parser.add_argument("--int_domain_high", type=float, default=1.0)
+    parser.add_argument("--int_domain_lowx", type=float, default=-1.0)
+    parser.add_argument("--int_domain_highx", type=float, default=1.0)
+    parser.add_argument("--int_domain_lowy", type=float, default=-1.0)
+    parser.add_argument("--int_domain_highy", type=float, default=1.0)
+    
     parser.add_argument("--eps", type=float, default=1e-3)
     
     return parser.parse_args()
