@@ -70,6 +70,7 @@ class Expert(nn.Module):
         for i, layer in enumerate(self.net[:-1]):
             y = layer(y)
             y = self.activation(y)
+
         y = self.net[-1](y)
         return y
 
@@ -112,6 +113,7 @@ class Gating(nn.Module):
             y = layer(y)
             y = self.activation(y)
         y = self.net[-1](y)
+        y=torch.sin(5*torch.pi*y)
         # y= self.softmax(y)
         return y
     
@@ -119,7 +121,9 @@ class Gating(nn.Module):
         for i, layer in enumerate(self.net[:-1]):
             y = layer(y)
             y = self.activation(y)
+        
         y = self.net[-1](y)
+        y=torch.sin(5*torch.pi*y)
         # y= self.softmax(y)
         return y
         

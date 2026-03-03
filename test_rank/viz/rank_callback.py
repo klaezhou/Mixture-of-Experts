@@ -1,7 +1,7 @@
 # viz/rank_callback.py
 import os
 from viz.callbacks import Callback
-from metrics.epsilon_rank2D import epsilon_rank_model_2d_trapz
+from metrics.epsilon_rank2D import epsilon_rank_model_2d_trapz_auto
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -30,7 +30,7 @@ class RankCallback(Callback):
         if it % self.freq != 0:
             return
 
-        r, evals = epsilon_rank_model_2d_trapz(trainer.model, self.feature_getter,self.nx,self.ny,self.lowx,self.highx,self.lowy,self.highy, eps=self.eps)
+        r, evals = epsilon_rank_model_2d_trapz_auto(trainer.model, self.feature_getter,self.nx,self.ny,self.lowx,self.highx,self.lowy,self.highy, eps=self.eps)
         # features_getter: model, x_grid -> Phi [N,m]
 
         self.iters.append(it)
@@ -41,7 +41,7 @@ class RankCallback(Callback):
         print(f"[Rank] iter={it} rank={r}")
     
     def on_train_end(self, trainer):
-        r, evals = epsilon_rank_model_2d_trapz(trainer.model, self.feature_getter,self.nx,self.ny,self.lowx,self.highx,self.lowy,self.highy, eps=self.eps)
+        r, evals = epsilon_rank_model_2d_trapz_auto(trainer.model, self.feature_getter,self.nx,self.ny,self.lowx,self.highx,self.lowy,self.highy, eps=self.eps)
         # features_getter: model, x_grid -> Phi [N,m]
 
         it=self.iters[-1]+1
@@ -69,7 +69,7 @@ class RankCallback(Callback):
 
         # evals: torch tensor [m]
         e = evals.detach().cpu().numpy()
-        e = np.sort(e)
+        e = np.sort(e) # sort in ascending order
 
         plt.figure()
         plt.plot(e, marker="o", linewidth=1)

@@ -1,6 +1,7 @@
 #\Equation/factory.py
 from .poisson import PoissonEquation
 from .allen_cahn import AllenCahnEquation
+from .cos import CosEquation
 # from .burgers import BurgersEquation 
 
 def get_equation(args):

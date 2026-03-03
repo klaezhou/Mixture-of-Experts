@@ -52,54 +52,60 @@ def trapezoid_weights_2d(nx: int, ny: int, lowx: float, highx: float, lowy: floa
 
 
 @torch.no_grad()
-def epsilon_rank_model_2d_trapz(
+def epsilon_rank_model_2d_trapz_auto(
     model,
     feature_getter,
-    nx: int,
-    ny: int,
-    lowx: float,
-    highx: float,
-    lowy: float,
-    highy: float,
+    nx: int, ny: int,
+    lowx: float, highx: float,
+    lowy: float, highy: float,
     eps: float = 1e-3,
 ):
-    """
-    Full 2D epsilon-rank pipeline (grid + trapezoid rule).
-
-    Steps:
-      1) build 2D grid
-      2) evaluate neuron features Phi
-      3) build Gram matrix via trapezoidal quadrature
-      4) compute epsilon-rank
-
-    Returns:
-        rank:  int
-        evals: eigenvalues of Gram matrix
-    """
     device = next(model.parameters()).device
-    dtype = next(model.parameters()).dtype
+    dtype  = next(model.parameters()).dtype
 
     # 1) grid
     x_grid, _, _ = make_grid_2d(nx, ny, lowx, highx, lowy, highy, device=device, dtype=dtype)
 
-    # 2) neuron features
-    Phi = feature_getter(model, x_grid)  # [N, m]
-    # Phi = Phi - Phi.mean(dim=0, keepdim=True)  # zero-mean features
+    # 2) feature getter
+    out = feature_getter(model, x_grid)
+
+    if isinstance(out, (tuple, list)) and len(out) == 2:
+        Phi, weight = out
+    else:
+        Phi, weight = out, None
+
+    if Phi.dim() == 1:
+        Phi = Phi.unsqueeze(1)
 
     N, m = Phi.shape
     if N != nx * ny:
-        raise RuntimeError("Feature shape does not match grid size.")
+        raise RuntimeError(f"Feature shape mismatch: N={N}, nx*ny={nx*ny}")
 
-    # 3) trapezoidal Gram matrix
+    # 3) trapz weights
     w, area = trapezoid_weights_2d(nx, ny, lowx, highx, lowy, highy, device=device, dtype=dtype)
-    Phi_w = Phi * w.unsqueeze(1)          # [N, m]
-    G = (Phi.T @ Phi_w) / area             # [m, m]
+    w = w.reshape(-1, 1)
+    area = torch.as_tensor(area, device=device, dtype=dtype)
 
-    # 4) eigenvalues & rank
+    # 4) build Gram
+    if weight is None:
+        Phi_w = Phi * w                          # [N,m]
+    else:
+        # make weight shape compatible with Phi
+        if weight.dim() == 1:
+            weight = weight.reshape(-1, 1)        # [N,1]
+        elif weight.dim() == 2 and weight.shape[1] == 1:
+            pass                                 # [N,1]
+        # allow [N,m] directly
+        if weight.shape[0] != N:
+            raise RuntimeError(f"weight N mismatch: weight.shape={weight.shape}, Phi.shape={Phi.shape}")
+
+        # If weight is [N,1], it broadcasts to [N,m]. If weight is [N,m], elementwise works.
+        Phi_w = Phi * (weight * w)               # [N,m]
+
+    G = (Phi.T @ Phi_w) / (area + 1e-12)
     evals = torch.linalg.eigvalsh(G)
     rank = int((evals > eps).sum().item())
-
     return rank, evals
 
-
+    
 

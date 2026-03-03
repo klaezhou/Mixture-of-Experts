@@ -14,11 +14,11 @@ def parse_args():
     # --- basic config ---
     parser.add_argument("--eq", type=str, default="ac", help="Equation name (poisson, ac, etc.)")
     parser.add_argument("--device", type=str, default="cuda:5")
-    parser.add_argument("--model", type=str, default="moe_d", help="Model architecture (moe_d, mlp etc.)")
+    parser.add_argument("--model", type=str, default="moe_d_w", help="Model architecture (moe_d, mlp,moe_d_w etc.)")
     parser.add_argument("--seed", type=int, default=2026)
     
     # --- sampling ---
-    parser.add_argument("--mode_n", type=float, default=5.0)
+    parser.add_argument("--mode_n", type=float, default=5.0) #ac specific
     
     parser.add_argument("--sample_method", type=str, default="grid") # random or grid
     parser.add_argument("--Nf", type=int, default=10000)
@@ -27,22 +27,22 @@ def parse_args():
     parser.add_argument("--nx", type=int, default=200)
     parser.add_argument("--nt", type=int, default=100)
     parser.add_argument("--w_pde", type=float, default=1.0)
-    parser.add_argument("--w_bc", type=float, default=20.0)
-    parser.add_argument("--w_ic", type=float, default=20.0)
+    parser.add_argument("--w_bc", type=float, default=5.0)
+    parser.add_argument("--w_ic", type=float, default=5.0)
 
 
     # --- modeling ---
     parser.add_argument("--input_size", type=int, default=2)
     parser.add_argument("--output_size", type=int, default=1)
-    parser.add_argument("--num_experts", type=int, default=5)
-    parser.add_argument("--hidden_size", type=int, default=10)
-    parser.add_argument("--depth", type=int, default=4)
-    parser.add_argument("--gating_hidden_size", type=int, default=4)
+    parser.add_argument("--num_experts", type=int, default=1)
+    parser.add_argument("--hidden_size", type=int, default=40)
+    parser.add_argument("--depth", type=int, default=3)
+    parser.add_argument("--gating_hidden_size", type=int, default=10)
     parser.add_argument("--gating_depth", type=int, default=1)
     parser.add_argument("--use_double", action="store_true")
     
     # --- training ---
-    parser.add_argument("--iters", type=int, default=1000)  # adam iters
+    parser.add_argument("--iters", type=int, default=500)  # adam iters
     parser.add_argument("--use_lbfgs", action="store_true") # use lbfgs or not
     parser.add_argument("--lbfgs_iter", type=int, default=700) # lbfgs iters
     parser.add_argument("--lbfgs_lr", type=float, default=1.0) # lbfgs lr
@@ -63,7 +63,7 @@ def parse_args():
     
     # --- rank callback ---
     parser.add_argument("--rank_freq", type=dict, default={"adam": 50, "lbfgs": 30}) 
-    parser.add_argument("--int_grid_n", type=int, default=200)
+    parser.add_argument("--int_grid_n", type=int, default=500)
     parser.add_argument("--int_domain_lowx", type=float, default=0.0)  #time
     parser.add_argument("--int_domain_highx", type=float, default=1.0)
     parser.add_argument("--int_domain_lowy", type=float, default=-1.0)  #x
